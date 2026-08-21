@@ -24,7 +24,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f "requirements.txt" ]; then pip install -r requirements.txt; elif [ -f ".github/workflows/requirements.txt" ]; then pip install -r .github/workflows/requirements.txt; else pip install smartapi-python pyotp pandas openpyxl requests; fi
 
       - name: Run Standalone Cloud Bot
         env:
@@ -37,12 +37,12 @@ jobs:
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
           WHATSAPP_API_KEY: ${{ secrets.WHATSAPP_API_KEY }}
         run: |
-          python sensex_bot_cloud.py --once
+          if [ -f "sensex_bot_cloud.py" ]; then python sensex_bot_cloud.py --once; else python .github/workflows/sensex_bot_cloud.py --once; fi
 
       - name: Commit & Push Excel Log Updates
         run: |
           git config --local user.email "bot@github.com"
           git config --local user.name "GitHub Cloud Bot"
-          git add signal_tracker.xlsx cloud_bot.log || true
+          git add signal_tracker.xlsx cloud_bot.log .github/workflows/signal_tracker.xlsx || true
           git commit -m "Auto-update signal tracker and logs [skip ci]" || true
           git push || true
