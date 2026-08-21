@@ -474,7 +474,7 @@ def run_cloud_bot() -> None:
 
     # Continuous Monitoring Loop if executed locally or with --forever
     poll_interval = 1.0
-    is_continuous = "--once" not in sys.argv
+    is_continuous = "--once" not in sys.argv and "--loop" in sys.argv
 
     if is_continuous:
         logger.info("🔄 Entering continuous live monitoring loop (Refreshing every 1 second in-place)...")
