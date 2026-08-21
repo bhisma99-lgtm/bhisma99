@@ -1,0 +1,44 @@
+name: Run SENSEX Cloud Options Bot
+
+on:
+  schedule:
+    - cron: '45 3 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/python-version@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Standalone Cloud Bot
+        env:
+          ANGEL_ONE_API_KEY: ${{ secrets.ANGEL_ONE_API_KEY }}
+          ANGEL_ONE_CLIENT_CODE: ${{ secrets.ANGEL_ONE_CLIENT_CODE }}
+          ANGEL_ONE_PASSWORD: ${{ secrets.ANGEL_ONE_PASSWORD }}
+          ANGEL_ONE_TOTP_SECRET: ${{ secrets.ANGEL_ONE_TOTP_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+          WHATSAPP_API_KEY: ${{ secrets.WHATSAPP_API_KEY }}
+        run: |
+          python sensex_bot_cloud.py
+
+      - name: Commit & Push Excel Log Updates
+        run: |
+          git config --local user.email "bot@github.com"
+          git config --local user.name "GitHub Cloud Bot"
+          git add signal_tracker.xlsx cloud_bot.log || true
+          git commit -m "Auto-update signal tracker and logs [skip ci]" || true
+          git push || true
