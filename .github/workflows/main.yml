@@ -4,6 +4,8 @@ on:
   schedule:
     # Runs Monday to Friday at 03:45 UTC (9:15 AM IST)
     - cron: '45 3 * * 1-5'
+    - cron: '15 4 * * 1-5'   # 9:45 AM IST (04:15 UTC)
+    - cron: '45 6 * * 1-5'   # 12:15 PM IST (06:45 UTC)
   workflow_dispatch:
 
 env:
