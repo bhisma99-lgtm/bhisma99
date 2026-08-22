@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Last Updated: 2026-08-22
 """Standalone Single-File Cloud Autonomous SENSEX Options Bot.
 
 This script consolidates:
@@ -29,9 +30,11 @@ from pathlib import Path
 from typing import Any, Mapping, Iterable, Sequence
 
 import pandas as pd
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Logging setup
 logging.basicConfig(
@@ -435,10 +438,10 @@ def run_cloud_bot() -> None:
     logger.info("=========================================================================")
     logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED")
     logger.info("Spot: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
-    logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f",
-                grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto)
-    logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f",
-                grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto)
+    logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Practical ₹%.2f",
+                grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
+    logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Practical ₹%.2f",
+                grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
     logger.info("=========================================================================")
 
     # Send Notification
@@ -449,11 +452,11 @@ def run_cloud_bot() -> None:
         f"🟢 *CE {int(grid.ce_leg.strike)}*:\n"
         f"• LTP: ₹{ce_ltp:.2f} | Delta: {grid.ce_leg.delta:.3f}\n"
         f"• EPM Low: ₹{grid.ce_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.ce_leg.sl_auto:.2f}\n"
-        f"• EPM Upper Target: ₹{grid.ce_leg.target_epm:.2f}\n\n"
+        f"• EPM Upper Target: ₹{grid.ce_leg.target_epm:.2f} | Practical Target: ₹{grid.ce_leg.practical_target:.2f}\n\n"
         f"🔴 *PE {int(grid.pe_leg.strike)}*:\n"
         f"• LTP: ₹{pe_ltp:.2f} | Delta: {-grid.pe_leg.delta:.3f}\n"
         f"• EPM Low: ₹{grid.pe_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.pe_leg.sl_auto:.2f}\n"
-        f"• EPM Upper Target: ₹{grid.pe_leg.target_epm:.2f}"
+        f"• EPM Upper Target: ₹{grid.pe_leg.target_epm:.2f} | Practical Target: ₹{grid.pe_leg.practical_target:.2f}"
     )
     send_mobile_alert(msg)
 
@@ -474,7 +477,7 @@ def run_cloud_bot() -> None:
 
     # Continuous Monitoring Loop if executed locally or with --forever
     poll_interval = 1.0
-    is_continuous = "--once" not in sys.argv and "--loop" in sys.argv
+    is_continuous = "--once" not in sys.argv
 
     if is_continuous:
         logger.info("🔄 Entering continuous live monitoring loop (Refreshing every 1 second in-place)...")
@@ -493,8 +496,12 @@ def run_cloud_bot() -> None:
                 live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
                 live_pe_res_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
 
-                status_line = f"\r[{checked_at.strftime('%H:%M:%S')}] Spot: {live_spot:.2f} | CE {ce_contract.trading_symbol} LTP: ₹{live_ce_ltp:.2f} (Low ₹{grid.ce_leg.epm_lower_range:.2f}) | PE {pe_contract.trading_symbol} LTP: ₹{live_pe_res_ltp:.2f} (Low ₹{grid.pe_leg.epm_lower_range:.2f})"
-                sys.stdout.write(status_line.ljust(110))
+                # Dynamic Live Delta calculation
+                ce_live_delta = calculate_bsm_delta(live_spot, ce_contract.strike, dte_days, vix_val, "CE")
+                pe_live_delta = calculate_bsm_delta(live_spot, pe_contract.strike, dte_days, vix_val, "PE")
+
+                status_line = f"\r[{checked_at.strftime('%H:%M:%S')}] Spot: {live_spot:.2f} | CE {ce_contract.trading_symbol} LTP: ₹{live_ce_ltp:.2f} (Low ₹{grid.ce_leg.epm_lower_range:.2f}, High ₹{grid.ce_leg.target_epm:.2f}, Prac ₹{grid.ce_leg.practical_target:.2f}) | PE {pe_contract.trading_symbol} LTP: ₹{live_pe_res_ltp:.2f} (Low ₹{grid.pe_leg.epm_lower_range:.2f}, High ₹{grid.pe_leg.target_epm:.2f}, Prac ₹{grid.pe_leg.practical_target:.2f})"
+                sys.stdout.write(status_line.ljust(140))
                 sys.stdout.flush()
 
         except KeyboardInterrupt:
@@ -503,4 +510,8 @@ def run_cloud_bot() -> None:
 
 
 if __name__ == "__main__":
-    run_cloud_bot()
+    try:
+        run_cloud_bot()
+    except Exception as exc:
+        logger.error("❌ CLOUD BOT EXECUTION ERROR: %s", exc, exc_info=True)
+        sys.exit(1)
