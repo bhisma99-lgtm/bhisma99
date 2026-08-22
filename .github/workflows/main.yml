@@ -39,7 +39,7 @@ jobs:
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
           WHATSAPP_API_KEY: ${{ secrets.WHATSAPP_API_KEY }}
         run: |
-          if [ -f "sensex_bot_cloud.py" ]; then python sensex_bot_cloud.py; else python .github/workflows/sensex_bot_cloud.py --once; fi
+          if [ -f "sensex_bot_cloud.py" ]; then python sensex_bot_cloud.py; else python .github/workflows/sensex_bot_cloud.py; fi
 
       - name: Commit & Push Excel Log Updates
         run: |
