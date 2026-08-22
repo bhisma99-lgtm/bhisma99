@@ -2,8 +2,7 @@ name: Run SENSEX Cloud Options Bot
 
 on:
   schedule:
-    # Runs Monday to Friday at 03:45 UTC (9:15 AM IST)
-    - cron: '45 3 * * 1-5'
+    - cron: '45 3 * * 1-5'   # 9:15 AM IST (03:45 UTC)
     - cron: '15 4 * * 1-5'   # 9:45 AM IST (04:15 UTC)
     - cron: '45 6 * * 1-5'   # 12:15 PM IST (06:45 UTC)
   workflow_dispatch:
@@ -45,6 +44,6 @@ jobs:
         run: |
           git config --local user.email "bot@github.com"
           git config --local user.name "GitHub Cloud Bot"
-          git add signal_tracker.xlsx cloud_bot.log .github/workflows/signal_tracker.xlsx || true
+          git add signal_tracker.xlsx cloud_bot.log || true
           git commit -m "Auto-update signal tracker and logs [skip ci]" || true
           git push || true
