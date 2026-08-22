@@ -213,6 +213,70 @@ def calculate_master_grid(
 # 2. MOBILE NOTIFICATIONS (TELEGRAM / TELEGRAM BOT / SMS WEBHOOK)
 # =========================================================================
 
+def check_remote_telegram_command() -> tuple[str | None, int | None]:
+    """Check Telegram for incoming commands ('STOP', 'LIVE [LOTS]', 'DEMO').
+    Returns tuple: (cmd, lot_size)
+    Examples:
+      - 'STOP' -> ('STOP', None)
+      - 'LIVE 2' -> ('LIVE', 2)
+      - 'LIVE' -> ('LIVE', 1)
+      - 'DEMO' -> ('DEMO', None)
+    """
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        return None, None
+    try:
+        import json
+        url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset=-1"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+            if data.get("ok") and data.get("result"):
+                last_msg = data["result"][-1].get("message", {}).get("text", "").strip().upper()
+                parts = last_msg.split()
+                first_word = parts[0] if parts else ""
+
+                if first_word in ("STOP", "HALT", "EXIT", "CLOSE", "/STOP"):
+                    return "STOP", None
+                elif first_word in ("LIVE", "REAL", "/LIVE"):
+                    lots = 1
+                    if len(parts) > 1 and parts[1].isdigit():
+                        lots = max(1, int(parts[1]))
+                    return "LIVE", lots
+                elif first_word in ("DEMO", "PAPER", "/DEMO"):
+                    return "DEMO", None
+    except Exception:
+        pass
+    return None, None
+
+
+def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
+    """Submit real Market Order to Angel One SmartAPI."""
+    try:
+        order_params = {
+            "variety": "NORMAL",
+            "tradingsymbol": trading_symbol,
+            "symboltoken": symbol_token,
+            "transactiontype": transaction_type,
+            "exchange": "BFO",
+            "ordertype": "MARKET",
+            "producttype": "INTRADAY",
+            "duration": "DAY",
+            "price": "0",
+            "squareoff": "0",
+            "stoploss": "0",
+            "quantity": str(quantity),
+        }
+        order_id = smart_api.placeOrder(order_params)
+        logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s | Order ID: %s", transaction_type, quantity, trading_symbol, order_id)
+        send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}*\nQuantity: *{quantity}*\nOrder ID: `{order_id}`")
+        return order_id
+    except Exception as exc:
+        logger.error("❌ Real Order Submission Failed: %s", exc)
+        send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol}: {exc}")
+        return None
+
+
 def send_mobile_alert(message: str) -> None:
     """Send mobile push notifications via Telegram Bot API or CallMeBot WhatsApp API."""
     # 1. Telegram Push Notification
@@ -438,9 +502,9 @@ def run_cloud_bot() -> None:
     logger.info("=========================================================================")
     logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED")
     logger.info("Spot: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
-    logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Practical ₹%.2f",
+    logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
                 grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
-    logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Practical ₹%.2f",
+    logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
                 grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
     logger.info("=========================================================================")
 
@@ -475,16 +539,36 @@ def run_cloud_bot() -> None:
         "pe_upper": grid.pe_leg.target_epm,
     })
 
-    # Continuous Monitoring Loop if executed locally or with --forever
+    # Continuous Monitoring Loop
     poll_interval = 1.0
     is_continuous = "--once" not in sys.argv
+    execution_mode = "LIVE" if "--live" in sys.argv else "PAPER"
 
     if is_continuous:
-        logger.info("🔄 Entering continuous live monitoring loop (Refreshing every 1 second in-place)...")
+        logger.info("🔄 Entering continuous monitoring loop (Mode: %s, Refreshing 1s in-place)...", execution_mode)
         try:
             while True:
                 time.sleep(poll_interval)
                 checked_at = datetime.now(IST)
+
+                # Check Telegram for remote commands ('LIVE [LOTS]', 'DEMO', 'STOP')
+                cmd, remote_lots = check_remote_telegram_command()
+                if cmd == "STOP":
+                    sys.stdout.write("\n")
+                    logger.info("🛑 Remote STOP command received via Telegram! Halting execution...")
+                    send_mobile_alert("🛑 *REMOTE STOP COMMAND RECEIVED*\nBot execution halted safely.")
+                    break
+                elif cmd == "LIVE":
+                    if remote_lots:
+                        lot_size = remote_lots
+                    if execution_mode != "LIVE":
+                        execution_mode = "LIVE"
+                        logger.info("⚠️ [MODE SWITCH] Switched to REAL LIVE TRADING MODE via Telegram (Lot Size: %d).", lot_size)
+                        send_mobile_alert(f"🚨 *MODE SWITCHED TO REAL LIVE TRADING*\nLot Size: *{lot_size} Lot(s)* ({lot_size * 20} Qty)\nReal orders will be placed on Angel One.")
+                elif cmd == "DEMO" and execution_mode != "PAPER":
+                    execution_mode = "PAPER"
+                    logger.info("🛡️ [MODE SWITCH] Switched back to SAFE PAPER TRADING MODE via Telegram.")
+                    send_mobile_alert("🛡️ *MODE SWITCHED TO PAPER TRADING*\nOrders set to safe demo simulation.")
 
                 # Fetch Live Spot & LTPs
                 live_spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
@@ -496,12 +580,8 @@ def run_cloud_bot() -> None:
                 live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
                 live_pe_res_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
 
-                # Dynamic Live Delta calculation
-                ce_live_delta = calculate_bsm_delta(live_spot, ce_contract.strike, dte_days, vix_val, "CE")
-                pe_live_delta = calculate_bsm_delta(live_spot, pe_contract.strike, dte_days, vix_val, "PE")
-
-                status_line = f"\r[{checked_at.strftime('%H:%M:%S')}] Spot: {live_spot:.2f} | CE {ce_contract.trading_symbol} LTP: ₹{live_ce_ltp:.2f} (Low ₹{grid.ce_leg.epm_lower_range:.2f}, High ₹{grid.ce_leg.target_epm:.2f}, Prac ₹{grid.ce_leg.practical_target:.2f}) | PE {pe_contract.trading_symbol} LTP: ₹{live_pe_res_ltp:.2f} (Low ₹{grid.pe_leg.epm_lower_range:.2f}, High ₹{grid.pe_leg.target_epm:.2f}, Prac ₹{grid.pe_leg.practical_target:.2f})"
-                sys.stdout.write(status_line.ljust(140))
+                status_line = f"\r[{checked_at.strftime('%H:%M:%S')}] [{execution_mode}] Spot: {live_spot:.2f} | CE {ce_contract.strike:.0f}: ₹{live_ce_ltp:.2f} (Low ₹{grid.ce_leg.epm_lower_range:.2f}, High ₹{grid.ce_leg.target_epm:.2f}) | PE {pe_contract.strike:.0f}: ₹{live_pe_res_ltp:.2f} (Low ₹{grid.pe_leg.epm_lower_range:.2f}, High ₹{grid.pe_leg.target_epm:.2f})"
+                sys.stdout.write(status_line.ljust(110))
                 sys.stdout.flush()
 
         except KeyboardInterrupt:
