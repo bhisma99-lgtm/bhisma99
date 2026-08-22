@@ -213,41 +213,64 @@ def calculate_master_grid(
 # 2. MOBILE NOTIFICATIONS (TELEGRAM / TELEGRAM BOT / SMS WEBHOOK)
 # =========================================================================
 
-def check_remote_telegram_command() -> tuple[str | None, int | None]:
-    """Check Telegram for incoming commands ('STOP', 'LIVE [LOTS]', 'DEMO').
-    Returns tuple: (cmd, lot_size)
-    Examples:
-      - 'STOP' -> ('STOP', None)
-      - 'LIVE 2' -> ('LIVE', 2)
-      - 'LIVE' -> ('LIVE', 1)
-      - 'DEMO' -> ('DEMO', None)
-    """
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not bot_token:
-        return None, None
-    try:
-        import json
-        url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset=-1"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode())
-            if data.get("ok") and data.get("result"):
-                last_msg = data["result"][-1].get("message", {}).get("text", "").strip().upper()
-                parts = last_msg.split()
-                first_word = parts[0] if parts else ""
+class TelegramCommandListener:
+    """Robust Telegram command listener that flushes old chat history on startup."""
 
-                if first_word in ("STOP", "HALT", "EXIT", "CLOSE", "/STOP"):
-                    return "STOP", None
-                elif first_word in ("LIVE", "REAL", "/LIVE"):
-                    lots = 1
-                    if len(parts) > 1 and parts[1].isdigit():
-                        lots = max(1, int(parts[1]))
-                    return "LIVE", lots
-                elif first_word in ("DEMO", "PAPER", "/DEMO"):
-                    return "DEMO", None
-    except Exception:
-        pass
-    return None, None
+    def __init__(self, bot_token: str | None) -> None:
+        self.bot_token = bot_token
+        self.last_update_id = 0
+        self._flush_old_updates()
+
+    def _flush_old_updates(self) -> None:
+        """Flush old chat history on startup so past STOP messages never trigger false stops."""
+        if not self.bot_token:
+            return
+        try:
+            import json
+            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates?offset=-1"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+                if data.get("ok") and data.get("result"):
+                    self.last_update_id = data["result"][-1].get("update_id", 0)
+                    flush_url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates?offset={self.last_update_id + 1}"
+                    urllib.request.urlopen(urllib.request.Request(flush_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=3)
+                    logger.info("📱 Telegram updates flushed on startup (Last Update ID: %d)", self.last_update_id)
+        except Exception as e:
+            logger.debug("Failed to flush Telegram updates: %s", e)
+
+    def get_new_command(self) -> tuple[str | None, int | None]:
+        """Poll ONLY for NEW incoming messages arriving AFTER bot startup."""
+        if not self.bot_token:
+            return None, None
+        try:
+            import json
+            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates?offset={self.last_update_id + 1}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+                if data.get("ok") and data.get("result"):
+                    for update in data["result"]:
+                        u_id = update.get("update_id", 0)
+                        if u_id > self.last_update_id:
+                            self.last_update_id = u_id
+                            msg_obj = update.get("message") or update.get("channel_post") or {}
+                            msg_text = str(msg_obj.get("text") or "").strip().upper()
+                            parts = msg_text.split()
+                            first_word = parts[0] if parts else ""
+
+                            if first_word in ("STOP", "HALT", "EXIT", "CLOSE", "/STOP"):
+                                return "STOP", None
+                            elif first_word in ("LIVE", "REAL", "/LIVE"):
+                                lots = 1
+                                if len(parts) > 1 and parts[1].isdigit():
+                                    lots = max(1, int(parts[1]))
+                                return "LIVE", lots
+                            elif first_word in ("DEMO", "PAPER", "/DEMO"):
+                                return "DEMO", None
+        except Exception:
+            pass
+        return None, None
 
 
 def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
@@ -546,13 +569,14 @@ def run_cloud_bot() -> None:
 
     if is_continuous:
         logger.info("🔄 Entering continuous monitoring loop (Mode: %s, Refreshing 1s in-place)...", execution_mode)
+        tg_listener = TelegramCommandListener(os.environ.get("TELEGRAM_BOT_TOKEN"))
         try:
             while True:
                 time.sleep(poll_interval)
                 checked_at = datetime.now(IST)
 
                 # Check Telegram for remote commands ('LIVE [LOTS]', 'DEMO', 'STOP')
-                cmd, remote_lots = check_remote_telegram_command()
+                cmd, remote_lots = tg_listener.get_new_command()
                 if cmd == "STOP":
                     sys.stdout.write("\n")
                     logger.info("🛑 Remote STOP command received via Telegram! Halting execution...")
