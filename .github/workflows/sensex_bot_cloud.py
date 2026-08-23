@@ -47,6 +47,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sensex_cloud_bot")
 
+# Enable Virtual Terminal Processing for Windows console to support ANSI escape sequences and colors
+if os.name == "nt":
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # ENABLE_PROCESSED_OUTPUT = 0x0001, ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    except Exception:
+        pass
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -439,12 +449,104 @@ def create_authenticated_smartapi_client() -> Any:
     )
     if not isinstance(login_response, dict) or login_response.get("status") is not True:
         raise RuntimeError(f"Angel One authentication failed: {login_response}")
+        
+    # Attach session keys dynamically for WebSocket use
+    try:
+        smart_api.feed_token = login_response["data"]["feedToken"]
+        smart_api.auth_token = login_response["data"]["jwtToken"]
+    except Exception:
+        smart_api.feed_token = None
+        smart_api.auth_token = None
+        
     return smart_api
 
 
 # =========================================================================
 # 5. MAIN CLOUD RUNNER
 # =========================================================================
+
+import threading
+
+class LiveWSFeed:
+    def __init__(self, client_code: str, feed_token: str, api_key: str, auth_token: str):
+        self.client_code = client_code
+        self.feed_token = feed_token
+        self.api_key = api_key
+        self.auth_token = auth_token
+        self.prices: dict[str, float] = {}
+        self.ws = None
+        self.thread = None
+        self.is_connected = False
+
+    def on_data(self, ws, message):
+        try:
+            if isinstance(message, list):
+                for tick in message:
+                    token = str(tick.get("token") or "")
+                    last_traded_price = tick.get("last_traded_price") or tick.get("ltp")
+                    if token and last_traded_price is not None:
+                        # Price is in paisa if > 1000000, else standard float
+                        val = float(last_traded_price)
+                        self.prices[token] = val / 100.0 if val > 1000000 else val
+            elif isinstance(message, dict):
+                token = str(message.get("token") or "")
+                last_traded_price = message.get("last_traded_price") or message.get("ltp")
+                if token and last_traded_price is not None:
+                    val = float(last_traded_price)
+                    self.prices[token] = val / 100.0 if val > 1000000 else val
+        except Exception:
+            pass
+
+    def on_open(self, ws):
+        self.is_connected = True
+        logger.info("🟢 WebSocket Connection Opened successfully!")
+
+    def on_close(self, ws, close_status_code, close_msg):
+        self.is_connected = False
+        logger.info("🔴 WebSocket Connection Closed.")
+
+    def on_error(self, ws, error):
+        self.is_connected = False
+        logger.debug("WebSocket Error: %s", error)
+
+    def start(self, tokens_to_subscribe: list[str]):
+        """Start the WebSocket in a background thread to update prices continuously."""
+        try:
+            from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+            self.ws = SmartWebSocketV2(self.auth_token, self.api_key, self.client_code, self.feed_token)
+            
+            self.ws.on_open = self.on_open
+            self.ws.on_data = self.on_data
+            self.ws.on_error = self.on_error
+            self.ws.on_close = self.on_close
+            
+            correlation_id = "sensex_bot_feed"
+            action = 1  # Subscribe
+            mode = 3    # Full/LTP mode
+            
+            subscription_list = []
+            for token in tokens_to_subscribe:
+                # 1 = NSECM, 2 = NSEFO, 3 = BSECM, 4 = BFO
+                exchange = 4 if len(token) > 6 else 3
+                subscription_list.append({
+                    "exchangeType": exchange,
+                    "tokens": [token]
+                })
+
+            def run_ws():
+                try:
+                    self.ws.connect()
+                    self.ws.subscribe(correlation_id, mode, subscription_list)
+                except Exception as e:
+                    logger.debug("WebSocket run exception: %s", e)
+                    self.is_connected = False
+
+            self.thread = threading.Thread(target=run_ws, daemon=True)
+            self.thread.start()
+        except Exception as e:
+            logger.debug("Could not initialize SmartWebSocketV2: %s", e)
+            self.is_connected = False
+
 
 def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str) -> tuple[float | None, float | None]:
     """Fetch the current 15-minute candle's Open and Low prices from SmartAPI.
@@ -665,6 +767,20 @@ def run_cloud_bot() -> None:
         "pe_upper": grid.pe_leg.target_epm,
     })
 
+    # Initialize and start background WebSocket feed for zero-lag live feed
+    ws_feed = None
+    try:
+        ws_feed = LiveWSFeed(
+            client_code=os.environ["ANGEL_ONE_CLIENT_CODE"],
+            feed_token=smart_api.feed_token,
+            api_key=os.environ["ANGEL_ONE_API_KEY"],
+            auth_token=smart_api.auth_token
+        )
+        ws_feed.start(["99919000", ce_contract.symbol_token, pe_contract.symbol_token])
+        logger.info("⚡ Background WebSocket Feed initialized.")
+    except Exception as e:
+        logger.warning("Could not initialize WebSocket Feed, falling back to HTTP: %s", e)
+
     # Continuous Monitoring Loop
     poll_interval = 1.0
     is_continuous = "--once" not in sys.argv
@@ -722,15 +838,36 @@ def run_cloud_bot() -> None:
                     logger.info("🛡️ [MODE SWITCH] Switched back to SAFE PAPER TRADING MODE via Telegram.")
                     send_mobile_alert("🛡️ *MODE SWITCHED TO PAPER TRADING*\nOrders set to safe demo simulation.")
 
-                # Fetch Live Spot & LTPs
-                live_spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
-                live_spot = float(live_spot_res["data"]["ltp"]) if isinstance(live_spot_res, dict) and live_spot_res.get("data") else spot_price
+                # Fetch Live Spot & LTPs (WebSocket with HTTP fallback)
+                live_spot = None
+                if ws_feed and ws_feed.is_connected:
+                    live_spot = ws_feed.prices.get("99919000")
+                if live_spot is None:
+                    try:
+                        live_spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
+                        live_spot = float(live_spot_res["data"]["ltp"]) if isinstance(live_spot_res, dict) and live_spot_res.get("data") else spot_price
+                    except Exception:
+                        live_spot = spot_price
 
-                live_ce_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
-                live_pe_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
+                live_ce_ltp = None
+                if ws_feed and ws_feed.is_connected:
+                    live_ce_ltp = ws_feed.prices.get(ce_contract.symbol_token)
+                if live_ce_ltp is None:
+                    try:
+                        live_ce_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
+                        live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
+                    except Exception:
+                        live_ce_ltp = ce_ltp
 
-                live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
-                live_pe_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
+                live_pe_ltp = None
+                if ws_feed and ws_feed.is_connected:
+                    live_pe_ltp = ws_feed.prices.get(pe_contract.symbol_token)
+                if live_pe_ltp is None:
+                    try:
+                        live_pe_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
+                        live_pe_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
+                    except Exception:
+                        live_pe_ltp = pe_ltp
 
                 # 1. Update Recent Lows while IDLE
                 if bot_state == "IDLE":
@@ -1082,12 +1219,19 @@ def run_cloud_bot() -> None:
                 previous_ce_ltp = live_ce_ltp
                 previous_pe_ltp = live_pe_ltp
 
-                # 5. Format Status Line
+                # 5. Format Shorter Status Line to prevent console wrapping and fix inline refresh
+                # We show the dynamic SL and Target of the current active trade in real-time
+                if bot_state == "CE_LONG":
+                    state_info = f"CE_LONG (SL ₹{active_sl:.1f} / TP ₹{active_target:.1f})"
+                elif bot_state == "PE_LONG":
+                    state_info = f"PE_LONG (SL ₹{active_sl:.1f} / TP ₹{active_target:.1f})"
+                else:
+                    state_info = "IDLE"
+                    
                 status_line = (
-                    f"[{checked_at.strftime('%H:%M:%S')}] [{execution_mode}] State: {bot_state} "
-                    f"(Trades: {trades_completed}/{max_trades_per_day}) | Spot: {live_spot:.2f} | "
-                    f"CE {ce_contract.strike:.0f}: ₹{live_ce_ltp:.2f} (L ₹{grid.ce_leg.epm_lower_range:.2f}, H ₹{grid.ce_leg.target_epm:.2f}) | "
-                    f"PE {pe_contract.strike:.0f}: ₹{live_pe_ltp:.2f} (L ₹{grid.pe_leg.epm_lower_range:.2f}, H ₹{grid.pe_leg.target_epm:.2f})"
+                    f"[{checked_at.strftime('%H:%M:%S')}] [{execution_mode}] {state_info} | "
+                    f"Trades: {trades_completed}/{max_trades_per_day} | Spot: {live_spot:.2f} | "
+                    f"CE: ₹{live_ce_ltp:.2f} | PE: ₹{live_pe_ltp:.2f}"
                 )
 
                 if is_github_actions:
@@ -1095,8 +1239,8 @@ def run_cloud_bot() -> None:
                     if loop_counter % 60 == 1 or loop_counter == 1:
                         logger.info(status_line)
                 else:
-                    # Inline refresh with carriage return for local terminals
-                    sys.stdout.write(f"\r{status_line}".ljust(140))
+                    # Inline refresh with carriage return and line clearing ANSI escape sequence for perfect same-line refresh
+                    sys.stdout.write(f"\r\033[2K{status_line}")
                     sys.stdout.flush()
 
         except KeyboardInterrupt:
