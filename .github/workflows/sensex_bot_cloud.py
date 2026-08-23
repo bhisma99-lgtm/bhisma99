@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Last Updated: 2026-08-22
 """Standalone Single-File Cloud Autonomous SENSEX Options Bot.
 
 This script consolidates:
@@ -46,16 +45,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("sensex_cloud_bot")
-
-# Enable Virtual Terminal Processing for Windows console to support ANSI escape sequences and colors
-if os.name == "nt":
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        # ENABLE_PROCESSED_OUTPUT = 0x0001, ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
-    except Exception:
-        pass
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -223,93 +212,6 @@ def calculate_master_grid(
 # 2. MOBILE NOTIFICATIONS (TELEGRAM / TELEGRAM BOT / SMS WEBHOOK)
 # =========================================================================
 
-class TelegramCommandListener:
-    """Robust Telegram command listener that flushes old chat history on startup."""
-
-    def __init__(self, bot_token: str | None) -> None:
-        self.bot_token = bot_token
-        self.last_update_id = 0
-        self._flush_old_updates()
-
-    def _flush_old_updates(self) -> None:
-        """Flush old chat history on startup so past STOP messages never trigger false stops."""
-        if not self.bot_token:
-            return
-        try:
-            import json
-            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates?offset=-1"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode())
-                if data.get("ok") and data.get("result"):
-                    self.last_update_id = data["result"][-1].get("update_id", 0)
-                    flush_url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates?offset={self.last_update_id + 1}"
-                    urllib.request.urlopen(urllib.request.Request(flush_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=3)
-                    logger.info("📱 Telegram updates flushed on startup (Last Update ID: %d)", self.last_update_id)
-        except Exception as e:
-            logger.debug("Failed to flush Telegram updates: %s", e)
-
-    def get_new_command(self) -> tuple[str | None, int | None]:
-        """Poll ONLY for NEW incoming messages arriving AFTER bot startup."""
-        if not self.bot_token:
-            return None, None
-        try:
-            import json
-            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates?offset={self.last_update_id + 1}"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode())
-                if data.get("ok") and data.get("result"):
-                    for update in data["result"]:
-                        u_id = update.get("update_id", 0)
-                        if u_id > self.last_update_id:
-                            self.last_update_id = u_id
-                            msg_obj = update.get("message") or update.get("channel_post") or {}
-                            msg_text = str(msg_obj.get("text") or "").strip().upper()
-                            parts = msg_text.split()
-                            first_word = parts[0] if parts else ""
-
-                            if first_word in ("STOP", "HALT", "EXIT", "CLOSE", "/STOP"):
-                                return "STOP", None
-                            elif first_word in ("LIVE", "REAL", "/LIVE"):
-                                lots = 1
-                                if len(parts) > 1 and parts[1].isdigit():
-                                    lots = max(1, int(parts[1]))
-                                return "LIVE", lots
-                            elif first_word in ("DEMO", "PAPER", "/DEMO"):
-                                return "DEMO", None
-        except Exception:
-            pass
-        return None, None
-
-
-def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
-    """Submit real Market Order to Angel One SmartAPI."""
-    try:
-        order_params = {
-            "variety": "NORMAL",
-            "tradingsymbol": trading_symbol,
-            "symboltoken": symbol_token,
-            "transactiontype": transaction_type,
-            "exchange": "BFO",
-            "ordertype": "MARKET",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "price": "0",
-            "squareoff": "0",
-            "stoploss": "0",
-            "quantity": str(quantity),
-        }
-        order_id = smart_api.placeOrder(order_params)
-        logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s | Order ID: %s", transaction_type, quantity, trading_symbol, order_id)
-        send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}*\nQuantity: *{quantity}*\nOrder ID: `{order_id}`")
-        return order_id
-    except Exception as exc:
-        logger.error("❌ Real Order Submission Failed: %s", exc)
-        send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol}: {exc}")
-        return None
-
-
 def send_mobile_alert(message: str) -> None:
     """Send mobile push notifications via Telegram Bot API or CallMeBot WhatsApp API."""
     # 1. Telegram Push Notification
@@ -449,206 +351,12 @@ def create_authenticated_smartapi_client() -> Any:
     )
     if not isinstance(login_response, dict) or login_response.get("status") is not True:
         raise RuntimeError(f"Angel One authentication failed: {login_response}")
-        
-    # Attach session keys dynamically for WebSocket use
-    try:
-        smart_api.feed_token = login_response["data"]["feedToken"]
-        smart_api.auth_token = login_response["data"]["jwtToken"]
-    except Exception:
-        smart_api.feed_token = None
-        smart_api.auth_token = None
-        
     return smart_api
 
 
 # =========================================================================
 # 5. MAIN CLOUD RUNNER
 # =========================================================================
-
-import threading
-
-class LiveWSFeed:
-    def __init__(self, client_code: str, feed_token: str, api_key: str, auth_token: str):
-        self.client_code = client_code
-        self.feed_token = feed_token
-        self.api_key = api_key
-        self.auth_token = auth_token
-        self.prices: dict[str, float] = {}
-        self.ws = None
-        self.thread = None
-        self.is_connected = False
-
-    def on_data(self, ws, message):
-        try:
-            if isinstance(message, list):
-                for tick in message:
-                    token = str(tick.get("token") or "")
-                    last_traded_price = tick.get("last_traded_price") or tick.get("ltp")
-                    if token and last_traded_price is not None:
-                        # Price is in paisa if > 1000000, else standard float
-                        val = float(last_traded_price)
-                        self.prices[token] = val / 100.0 if val > 1000000 else val
-            elif isinstance(message, dict):
-                token = str(message.get("token") or "")
-                last_traded_price = message.get("last_traded_price") or message.get("ltp")
-                if token and last_traded_price is not None:
-                    val = float(last_traded_price)
-                    self.prices[token] = val / 100.0 if val > 1000000 else val
-        except Exception:
-            pass
-
-    def on_open(self, ws):
-        self.is_connected = True
-        logger.info("🟢 WebSocket Connection Opened successfully!")
-
-    def on_close(self, ws, close_status_code, close_msg):
-        self.is_connected = False
-        logger.info("🔴 WebSocket Connection Closed.")
-
-    def on_error(self, ws, error):
-        self.is_connected = False
-        logger.debug("WebSocket Error: %s", error)
-
-    def start(self, tokens_to_subscribe: list[str]):
-        """Start the WebSocket in a background thread to update prices continuously."""
-        try:
-            from SmartApi.smartWebSocketV2 import SmartWebSocketV2
-            self.ws = SmartWebSocketV2(self.auth_token, self.api_key, self.client_code, self.feed_token)
-            
-            self.ws.on_open = self.on_open
-            self.ws.on_data = self.on_data
-            self.ws.on_error = self.on_error
-            self.ws.on_close = self.on_close
-            
-            correlation_id = "sensex_bot_feed"
-            action = 1  # Subscribe
-            mode = 3    # Full/LTP mode
-            
-            subscription_list = []
-            for token in tokens_to_subscribe:
-                # 1 = NSECM, 2 = NSEFO, 3 = BSECM, 4 = BFO
-                exchange = 4 if len(token) > 6 else 3
-                subscription_list.append({
-                    "exchangeType": exchange,
-                    "tokens": [token]
-                })
-
-            def run_ws():
-                try:
-                    self.ws.connect()
-                    self.ws.subscribe(correlation_id, mode, subscription_list)
-                except Exception as e:
-                    logger.debug("WebSocket run exception: %s", e)
-                    self.is_connected = False
-
-            self.thread = threading.Thread(target=run_ws, daemon=True)
-            self.thread.start()
-        except Exception as e:
-            logger.debug("Could not initialize SmartWebSocketV2: %s", e)
-            self.is_connected = False
-
-
-def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str) -> tuple[float | None, float | None]:
-    """Fetch the current 15-minute candle's Open and Low prices from SmartAPI.
-    Returns (open, low) on success, or (None, None) on error.
-    """
-    try:
-        now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(minutes=45)
-        params = {
-            "exchange": exchange,
-            "symboltoken": symbol_token,
-            "interval": "FIFTEEN_MINUTE",
-            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
-            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
-        }
-        res = smart_api.getCandle(params)
-        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
-            candles = res["data"]
-            if candles:
-                last_candle = candles[-1]
-                if len(last_candle) >= 4:
-                    c_open = float(last_candle[1])
-                    c_low = float(last_candle[3])
-                    return c_open, c_low
-    except Exception as e:
-        logger.debug("Error fetching 15m candle OHLC: %s", e)
-    return None, None
-
-
-def check_active_position_qty(smart_api: Any, symbol_token: str) -> int | None:
-    """Fetch active positions from Angel One SmartAPI and return the net quantity for the given token.
-    Returns None if the API call fails, to prevent false positive manual closure triggers.
-    """
-    try:
-        res = smart_api.position()
-        if isinstance(res, dict) and res.get("status") is True:
-            positions_list = res.get("data")
-            if positions_list is not None:
-                for pos in positions_list:
-                    token = str(pos.get("symboltoken") or pos.get("token") or "").strip()
-                    if token == str(symbol_token).strip():
-                        return abs(int(pos.get("netqty") or 0))
-                return 0  # Contract not found in position list means quantity is 0
-    except Exception as e:
-        logger.warning("Error fetching active positions from SmartAPI: %s", e)
-    return None
-
-
-def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str, quantity: int, ltp: float) -> Any:
-    """Submit a MARKET sell order first. If it fails, immediately place a LIMIT sell order
-    at a lower price (LTP - 10 points) to guarantee immediate execution as a marketable limit order.
-    """
-    # 1. Try Market Order
-    try:
-        order_params = {
-            "variety": "NORMAL",
-            "tradingsymbol": trading_symbol,
-            "symboltoken": symbol_token,
-            "transactiontype": "SELL",
-            "exchange": "BFO",
-            "ordertype": "MARKET",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "price": "0",
-            "squareoff": "0",
-            "stoploss": "0",
-            "quantity": str(quantity),
-        }
-        order_id = smart_api.placeOrder(order_params)
-        if order_id:
-            logger.info("⚡ [MARKET SELL ORDER SUCCESS] Order ID: %s", order_id)
-            return order_id
-    except Exception as exc:
-        logger.warning("Market sell failed, attempting failsafe Limit sell: %s", exc)
-    
-    # 2. Try Failsafe Limit Order (Sell at LTP - 10 points to guarantee execution)
-    try:
-        limit_price = max(2.0, float(ltp) - 10.0)
-        limit_price_str = f"{limit_price:.2f}"
-        
-        order_params = {
-            "variety": "NORMAL",
-            "tradingsymbol": trading_symbol,
-            "symboltoken": symbol_token,
-            "transactiontype": "SELL",
-            "exchange": "BFO",
-            "ordertype": "LIMIT",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "price": limit_price_str,
-            "squareoff": "0",
-            "stoploss": "0",
-            "quantity": str(quantity),
-        }
-        order_id = smart_api.placeOrder(order_params)
-        logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] Price: %s | Order ID: %s", limit_price_str, order_id)
-        return order_id
-    except Exception as exc:
-        logger.error("❌ Failsafe Sell Failed: %s", exc)
-        send_mobile_alert(f"⚠️ *CRITICAL: SELL ORDER FAILED*\nCould not execute sell for {trading_symbol}. Please close manually!")
-        return None
-
 
 def run_cloud_bot() -> None:
     logger.info("🚀 Starting Standalone Cloud SENSEX Options Bot...")
@@ -659,7 +367,6 @@ def run_cloud_bot() -> None:
     # Get Spot Price
     spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
     spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else 77500.0
-    spot_open = float(spot_res["data"]["open"]) if isinstance(spot_res, dict) and spot_res.get("data") and spot_res["data"].get("open") else spot_price
 
     # Get VIX
     vix_res = smart_api.ltpData("NSE", "INDIA VIX", "99926017")
@@ -730,10 +437,10 @@ def run_cloud_bot() -> None:
     logger.info("=========================================================================")
     logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED")
     logger.info("Spot: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
-    logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
-    logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
+    logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f",
+                grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto)
+    logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f",
+                grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto)
     logger.info("=========================================================================")
 
     # Send Notification
@@ -744,11 +451,11 @@ def run_cloud_bot() -> None:
         f"🟢 *CE {int(grid.ce_leg.strike)}*:\n"
         f"• LTP: ₹{ce_ltp:.2f} | Delta: {grid.ce_leg.delta:.3f}\n"
         f"• EPM Low: ₹{grid.ce_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.ce_leg.sl_auto:.2f}\n"
-        f"• EPM Upper Target: ₹{grid.ce_leg.target_epm:.2f} | Practical Target: ₹{grid.ce_leg.practical_target:.2f}\n\n"
+        f"• EPM Upper Target: ₹{grid.ce_leg.target_epm:.2f}\n\n"
         f"🔴 *PE {int(grid.pe_leg.strike)}*:\n"
         f"• LTP: ₹{pe_ltp:.2f} | Delta: {-grid.pe_leg.delta:.3f}\n"
         f"• EPM Low: ₹{grid.pe_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.pe_leg.sl_auto:.2f}\n"
-        f"• EPM Upper Target: ₹{grid.pe_leg.target_epm:.2f} | Practical Target: ₹{grid.pe_leg.practical_target:.2f}"
+        f"• EPM Upper Target: ₹{grid.pe_leg.target_epm:.2f}"
     )
     send_mobile_alert(msg)
 
@@ -767,481 +474,30 @@ def run_cloud_bot() -> None:
         "pe_upper": grid.pe_leg.target_epm,
     })
 
-    # Initialize and start background WebSocket feed for zero-lag live feed
-    ws_feed = None
-    try:
-        ws_feed = LiveWSFeed(
-            client_code=os.environ["ANGEL_ONE_CLIENT_CODE"],
-            feed_token=smart_api.feed_token,
-            api_key=os.environ["ANGEL_ONE_API_KEY"],
-            auth_token=smart_api.auth_token
-        )
-        ws_feed.start(["99919000", ce_contract.symbol_token, pe_contract.symbol_token])
-        logger.info("⚡ Background WebSocket Feed initialized.")
-    except Exception as e:
-        logger.warning("Could not initialize WebSocket Feed, falling back to HTTP: %s", e)
-
-    # Continuous Monitoring Loop
+    # Continuous Monitoring Loop if executed locally or with --forever
     poll_interval = 1.0
-    is_continuous = "--once" not in sys.argv
-    execution_mode = "LIVE" if "--live" in sys.argv else "PAPER"
-
-    # State Machine Variables
-    bot_state = "IDLE"  # Options: "IDLE", "CE_LONG", "PE_LONG"
-    trades_completed = 0
-    max_trades_per_day = 2
-    active_contract = None
-    active_entry_price = 0.0
-    active_sl = 0.0
-    active_target = 0.0
-    entry_time = None
-    lot_size = 1
-    loop_counter = 0
-    is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
-
-    # Trailing Stop-Loss Variables
-    original_sl_distance = 0.0
-    trailing_active = False
-    peak_price = 0.0
-
-    # Memory of lowest prices observed in IDLE state for bounce SL tracking
-    recent_ce_low = ce_ltp
-    recent_pe_low = pe_ltp
-    previous_ce_ltp = ce_ltp
-    previous_pe_ltp = pe_ltp
+    is_continuous = "--once" not in sys.argv and "--loop" in sys.argv
 
     if is_continuous:
-        logger.info("🔄 Entering continuous monitoring loop (Mode: %s, Refreshing 1s in-place)...", execution_mode)
-        tg_listener = TelegramCommandListener(os.environ.get("TELEGRAM_BOT_TOKEN"))
+        logger.info("🔄 Entering continuous live monitoring loop (Refreshing every 1 second in-place)...")
         try:
             while True:
                 time.sleep(poll_interval)
                 checked_at = datetime.now(IST)
-                loop_counter += 1
 
-                # Check Telegram for remote commands ('LIVE [LOTS]', 'DEMO', 'STOP')
-                cmd, remote_lots = tg_listener.get_new_command()
-                if cmd == "STOP":
-                    sys.stdout.write("\n")
-                    logger.info("🛑 Remote STOP command received via Telegram! Halting execution...")
-                    send_mobile_alert("🛑 *REMOTE STOP COMMAND RECEIVED*\nBot execution halted safely.")
-                    break
-                elif cmd == "LIVE":
-                    if remote_lots:
-                        lot_size = remote_lots
-                    if execution_mode != "LIVE":
-                        execution_mode = "LIVE"
-                        logger.info("⚠️ [MODE SWITCH] Switched to REAL LIVE TRADING MODE via Telegram (Lot Size: %d).", lot_size)
-                        send_mobile_alert(f"🚨 *MODE SWITCHED TO REAL LIVE TRADING*\nLot Size: *{lot_size} Lot(s)* ({lot_size * 20} Qty)\nReal orders will be placed on Angel One.")
-                elif cmd == "DEMO" and execution_mode != "PAPER":
-                    execution_mode = "PAPER"
-                    logger.info("🛡️ [MODE SWITCH] Switched back to SAFE PAPER TRADING MODE via Telegram.")
-                    send_mobile_alert("🛡️ *MODE SWITCHED TO PAPER TRADING*\nOrders set to safe demo simulation.")
+                # Fetch Live Spot & LTPs
+                live_spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
+                live_spot = float(live_spot_res["data"]["ltp"]) if isinstance(live_spot_res, dict) and live_spot_res.get("data") else spot_price
 
-                # Fetch Live Spot & LTPs (WebSocket with HTTP fallback)
-                live_spot = None
-                if ws_feed and ws_feed.is_connected:
-                    live_spot = ws_feed.prices.get("99919000")
-                if live_spot is None:
-                    try:
-                        live_spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
-                        live_spot = float(live_spot_res["data"]["ltp"]) if isinstance(live_spot_res, dict) and live_spot_res.get("data") else spot_price
-                    except Exception:
-                        live_spot = spot_price
+                live_ce_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
+                live_pe_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
 
-                live_ce_ltp = None
-                if ws_feed and ws_feed.is_connected:
-                    live_ce_ltp = ws_feed.prices.get(ce_contract.symbol_token)
-                if live_ce_ltp is None:
-                    try:
-                        live_ce_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
-                        live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
-                    except Exception:
-                        live_ce_ltp = ce_ltp
+                live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
+                live_pe_res_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
 
-                live_pe_ltp = None
-                if ws_feed and ws_feed.is_connected:
-                    live_pe_ltp = ws_feed.prices.get(pe_contract.symbol_token)
-                if live_pe_ltp is None:
-                    try:
-                        live_pe_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
-                        live_pe_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
-                    except Exception:
-                        live_pe_ltp = pe_ltp
-
-                # 1. Update Recent Lows while IDLE
-                if bot_state == "IDLE":
-                    recent_ce_low = min(recent_ce_low, live_ce_ltp)
-                    recent_pe_low = min(recent_pe_low, live_pe_ltp)
-
-                # 2. Check for Manual position closure on Broker (LIVE mode only)
-                if execution_mode == "LIVE" and bot_state in ("CE_LONG", "PE_LONG") and active_contract:
-                    real_qty = check_active_position_qty(smart_api, active_contract.symbol_token)
-                    if real_qty == 0:
-                        logger.info("🚨 [MANUAL CLOSURE DETECTED] Position for %s has been closed manually on broker. Resetting bot state to IDLE.", active_contract.trading_symbol)
-                        send_mobile_alert(f"🚨 *MANUAL POSITION CLOSURE DETECTED*\n"
-                                          f"Position for *{active_contract.trading_symbol}* was closed manually on your broker app.\n"
-                                          f"Resetting bot state to *IDLE*.")
-                        
-                        # Log manual exit to Excel Tracker
-                        excel_tracker.add_order({
-                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                            "mode": "LIVE",
-                            "state": "MANUAL_EXIT",
-                            "trading_symbol": active_contract.trading_symbol,
-                            "price": live_ce_ltp if bot_state == "CE_LONG" else live_pe_ltp,
-                            "qty": lot_size * 20,
-                            "trades_count": trades_completed + 1
-                        })
-                        
-                        bot_state = "IDLE"
-                        active_contract = None
-                        trades_completed += 1
-                        # Reset recent low tracking
-                        recent_ce_low = live_ce_ltp
-                        recent_pe_low = live_pe_ltp
-
-                # 3. State Machine Signal Evaluation
-                if bot_state == "IDLE":
-                    if trades_completed >= max_trades_per_day:
-                        pass
-                    else:
-                        # --- CE ENTRY SIGNAL EVALUATION ---
-                        ce_low_level = grid.ce_leg.epm_lower_range
-                        
-                        # Case 1: At or near EPM Low (+/- 2 points) and bouncing up (rising tick) - NO NEED TO WAIT FOR OPEN
-                        is_at_or_near_low_ce = (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp > previous_ce_ltp)
-                        
-                        # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
-                        is_broken_low_bounce_ce = False
-                        ce_candle_low_sl = ce_low_level - 15.0  # Safe fallback
-                        
-                        if (ce_low_level - 20 <= live_ce_ltp < ce_low_level) and (live_spot >= spot_open):
-                            c_open, c_low = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
-                            if c_open is not None and c_low is not None:
-                                if live_ce_ltp >= c_open:
-                                    is_broken_low_bounce_ce = True
-                                    ce_candle_low_sl = c_low
-
-                        # Determine if we have a valid CE Entry
-                        ce_entry_signal = False
-                        active_sl_ce = grid.ce_leg.sl_auto
-                        entry_type_str_ce = ""
-                        
-                        if is_at_or_near_low_ce:
-                            ce_entry_signal = True
-                            active_sl_ce = grid.ce_leg.sl_auto
-                            entry_type_str_ce = "At/Near EPM Low Bounce"
-                        elif is_broken_low_bounce_ce:
-                            ce_entry_signal = True
-                            # SL is Candle Low minus 3 points
-                            active_sl_ce = max(1.0, ce_candle_low_sl - 3.0)
-                            entry_type_str_ce = "EPM Break & 15m Candle Open Bounce"
-
-                        # Trigger CE Long Entry
-                        if ce_entry_signal:
-                            bot_state = "CE_LONG"
-                            active_contract = ce_contract
-                            active_entry_price = live_ce_ltp
-                            active_target = grid.ce_leg.practical_target
-                            active_sl = active_sl_ce
-                            entry_time = datetime.now(IST)
-                            qty_to_trade = lot_size * 20
-                            original_sl_distance = max(1.0, active_entry_price - active_sl)
-                            trailing_active = False
-                            peak_price = active_entry_price
-                            
-                            logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_ce_ltp, entry_type_str_ce, active_sl, active_target)
-                            send_mobile_alert(f"🟢 *CE ENTRY SIGNAL ALIGNED ({entry_type_str_ce})*\n\n"
-                                              f"Contract: *{active_contract.trading_symbol}*\n"
-                                              f"Entry Price: ₹{active_entry_price:.2f}\n"
-                                              f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
-                                              f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
-                            
-                            # Place Live Order
-                            if execution_mode == "LIVE":
-                                submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
-                            
-                            # Log to Excel
-                            excel_tracker.add_order({
-                                "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                                "mode": execution_mode,
-                                "state": "ENTRY",
-                                "trading_symbol": active_contract.trading_symbol,
-                                "price": active_entry_price,
-                                "qty": qty_to_trade,
-                                "trades_count": trades_completed + 1
-                            })
-
-                        # --- PE ENTRY SIGNAL EVALUATION ---
-                        else:
-                            pe_low_level = grid.pe_leg.epm_lower_range
-                            
-                            # Case 1: At or near EPM Low (+/- 2 points) and bouncing up (rising tick) - NO NEED TO WAIT FOR OPEN
-                            is_at_or_near_low_pe = (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp > previous_pe_ltp)
-                            
-                            # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
-                            is_broken_low_bounce_pe = False
-                            pe_candle_low_sl = pe_low_level - 15.0  # Safe fallback
-                            
-                            if (pe_low_level - 20 <= live_pe_ltp < pe_low_level) and (live_spot < spot_open):
-                                c_open, c_low = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
-                                if c_open is not None and c_low is not None:
-                                    if live_pe_ltp >= c_open:
-                                        is_broken_low_bounce_pe = True
-                                        pe_candle_low_sl = c_low
-
-                            # Determine if we have a valid PE Entry
-                            pe_entry_signal = False
-                            active_sl_pe = grid.pe_leg.sl_auto
-                            entry_type_str_pe = ""
-                            
-                            if is_at_or_near_low_pe:
-                                pe_entry_signal = True
-                                active_sl_pe = grid.pe_leg.sl_auto
-                                entry_type_str_pe = "At/Near EPM Low Bounce"
-                            elif is_broken_low_bounce_pe:
-                                pe_entry_signal = True
-                                # SL is Candle Low minus 3 points
-                                active_sl_pe = max(1.0, pe_candle_low_sl - 3.0)
-                                entry_type_str_pe = "EPM Break & 15m Candle Open Bounce"
-
-                            # Trigger PE Long Entry
-                            if pe_entry_signal:
-                                bot_state = "PE_LONG"
-                                active_contract = pe_contract
-                                active_entry_price = live_pe_ltp
-                                active_target = grid.pe_leg.practical_target
-                                active_sl = active_sl_pe
-                                entry_time = datetime.now(IST)
-                                qty_to_trade = lot_size * 20
-                                original_sl_distance = max(1.0, active_entry_price - active_sl)
-                                trailing_active = False
-                                peak_price = active_entry_price
-                                
-                                logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
-                                send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
-                                                  f"Contract: *{active_contract.trading_symbol}*\n"
-                                                  f"Entry Price: ₹{active_entry_price:.2f}\n"
-                                                  f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
-                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
-                                
-                                # Place Live Order
-                                if execution_mode == "LIVE":
-                                    submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
-                                
-                                # Log to Excel
-                                excel_tracker.add_order({
-                                    "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                                    "mode": execution_mode,
-                                    "state": "ENTRY",
-                                    "trading_symbol": active_contract.trading_symbol,
-                                    "price": active_entry_price,
-                                    "qty": qty_to_trade,
-                                    "trades_count": trades_completed + 1
-                                })
-
-                elif bot_state == "CE_LONG":
-                    # --- CE EXIT EVALUATION ---
-                    # Calculate 3X risk-reward Take Profit target based on original risk distance
-                    surge_target_price = active_entry_price + (3 * original_sl_distance)
-                    
-                    elapsed_mins = (datetime.now(IST) - entry_time).total_seconds() / 60.0
-                    is_surge_window = (elapsed_mins <= 60.0)  # Within 1-2 30-min candles (60 mins)
-                    
-                    # 1. Check for Surge Trailing SL activation/update (Only in surge window and if reached 3X)
-                    if is_surge_window and live_ce_ltp >= surge_target_price:
-                        if not trailing_active:
-                            trailing_active = True
-                            peak_price = live_ce_ltp
-                            active_sl = max(active_sl, live_ce_ltp - 5.0)  # Trail 5 points behind
-                            logger.info("🔥 [SURGE TRAILING ACTIVATED] CE peak reached ₹%.2f. Trailing SL activated at ₹%.2f.", peak_price, active_sl)
-                            send_mobile_alert(f"🔥 *SURGE TRAILING ACTIVATED*\n\n"
-                                              f"Contract: *{active_contract.trading_symbol}*\n"
-                                              f"Peak Price: ₹{peak_price:.2f}\n"
-                                              f"New Trailing SL: ₹{active_sl:.2f} (Locked-in Profit!)")
-                        elif live_ce_ltp > peak_price:
-                            peak_price = live_ce_ltp
-                            active_sl = max(active_sl, live_ce_ltp - 5.0)  # Lock in higher trailing stop
-                            logger.info("📈 [TRAILING SL RAISED] CE peak rose to ₹%.2f. New trailing SL: ₹%.2f.", peak_price, active_sl)
-                    
-                    # 2. Stop Loss or Trailing Stop Loss exit
-                    if live_ce_ltp <= active_sl:
-                        exit_state_str = "EXIT_SL" if not trailing_active else "EXIT_TSL"
-                        exit_title_str = "STOP LOSS HIT" if not trailing_active else "TRAILING SL HIT (PROFIT BOOKED!)"
-                        
-                        logger.info("🔴 [CE EXIT - %s] CE LTP ₹%.2f hit SL ₹%.2f", exit_title_str, live_ce_ltp, active_sl)
-                        send_mobile_alert(f"🔴 *CE EXIT - {exit_title_str}*\n\n"
-                                          f"Contract: *{active_contract.trading_symbol}*\n"
-                                          f"Exit Price: ₹{live_ce_ltp:.2f}\n"
-                                          f"SL: ₹{active_sl:.2f} | Practical Target: ₹{active_target:.2f}\n"
-                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
-                        
-                        if execution_mode == "LIVE":
-                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_ce_ltp)
-                        
-                        excel_tracker.add_order({
-                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                            "mode": execution_mode,
-                            "state": exit_state_str,
-                            "trading_symbol": active_contract.trading_symbol,
-                            "price": live_ce_ltp,
-                            "qty": lot_size * 20,
-                            "trades_count": trades_completed + 1
-                        })
-                        
-                        bot_state = "IDLE"
-                        active_contract = None
-                        trades_completed += 1
-                        trailing_active = False
-                        peak_price = 0.0
-                        recent_ce_low = live_ce_ltp
-                        recent_pe_low = live_pe_ltp
-
-                    # 3. Standard Practical Target exit (Only if trailing stop is NOT active)
-                    elif not trailing_active and live_ce_ltp >= active_target:
-                        logger.info("🟢 [CE EXIT - TARGET HIT] CE LTP ₹%.2f hit Practical Target ₹%.2f", live_ce_ltp, active_target)
-                        send_mobile_alert(f"🟢 *CE EXIT - TARGET REACHED*\n\n"
-                                          f"Reason: Practical Target (₹{active_target:.2f}) reached\n"
-                                          f"Contract: *{active_contract.trading_symbol}*\n"
-                                          f"Exit Price: ₹{live_ce_ltp:.2f} (Entry: ₹{active_entry_price:.2f})\n"
-                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
-                        
-                        if execution_mode == "LIVE":
-                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_ce_ltp)
-                        
-                        excel_tracker.add_order({
-                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                            "mode": execution_mode,
-                            "state": "EXIT_TP",
-                            "trading_symbol": active_contract.trading_symbol,
-                            "price": live_ce_ltp,
-                            "qty": lot_size * 20,
-                            "trades_count": trades_completed + 1
-                        })
-                        
-                        bot_state = "IDLE"
-                        active_contract = None
-                        trades_completed += 1
-                        trailing_active = False
-                        peak_price = 0.0
-                        recent_ce_low = live_ce_ltp
-                        recent_pe_low = live_pe_ltp
-
-                elif bot_state == "PE_LONG":
-                    # --- PE EXIT EVALUATION ---
-                    # Calculate 3X risk-reward Take Profit target based on original risk distance
-                    surge_target_price = active_entry_price + (3 * original_sl_distance)
-                    
-                    elapsed_mins = (datetime.now(IST) - entry_time).total_seconds() / 60.0
-                    is_surge_window = (elapsed_mins <= 60.0)  # Within 1-2 30-min candles (60 mins)
-                    
-                    # 1. Check for Surge Trailing SL activation/update (Only in surge window and if reached 3X)
-                    if is_surge_window and live_pe_ltp >= surge_target_price:
-                        if not trailing_active:
-                            trailing_active = True
-                            peak_price = live_pe_ltp
-                            active_sl = max(active_sl, live_pe_ltp - 5.0)  # Trail 5 points behind
-                            logger.info("🔥 [SURGE TRAILING ACTIVATED] PE peak reached ₹%.2f. Trailing SL activated at ₹%.2f.", peak_price, active_sl)
-                            send_mobile_alert(f"🔥 *SURGE TRAILING ACTIVATED*\n\n"
-                                              f"Contract: *{active_contract.trading_symbol}*\n"
-                                              f"Peak Price: ₹{peak_price:.2f}\n"
-                                              f"New Trailing SL: ₹{active_sl:.2f} (Locked-in Profit!)")
-                        elif live_pe_ltp > peak_price:
-                            peak_price = live_pe_ltp
-                            active_sl = max(active_sl, live_pe_ltp - 5.0)  # Lock in higher trailing stop
-                            logger.info("📈 [TRAILING SL RAISED] PE peak rose to ₹%.2f. New trailing SL: ₹%.2f.", peak_price, active_sl)
-                    
-                    # 2. Stop Loss or Trailing Stop Loss exit
-                    if live_pe_ltp <= active_sl:
-                        exit_state_str = "EXIT_SL" if not trailing_active else "EXIT_TSL"
-                        exit_title_str = "STOP LOSS HIT" if not trailing_active else "TRAILING SL HIT (PROFIT BOOKED!)"
-                        
-                        logger.info("🔴 [PE EXIT - %s] PE LTP ₹%.2f hit SL ₹%.2f", exit_title_str, live_pe_ltp, active_sl)
-                        send_mobile_alert(f"🔴 *PE EXIT - {exit_title_str}*\n\n"
-                                          f"Contract: *{active_contract.trading_symbol}*\n"
-                                          f"Exit Price: ₹{live_pe_ltp:.2f}\n"
-                                          f"SL: ₹{active_sl:.2f} | Practical Target: ₹{active_target:.2f}\n"
-                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
-                        
-                        if execution_mode == "LIVE":
-                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_pe_ltp)
-                        
-                        excel_tracker.add_order({
-                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                            "mode": execution_mode,
-                            "state": exit_state_str,
-                            "trading_symbol": active_contract.trading_symbol,
-                            "price": live_pe_ltp,
-                            "qty": lot_size * 20,
-                            "trades_count": trades_completed + 1
-                        })
-                        
-                        bot_state = "IDLE"
-                        active_contract = None
-                        trades_completed += 1
-                        trailing_active = False
-                        peak_price = 0.0
-                        recent_ce_low = live_ce_ltp
-                        recent_pe_low = live_pe_ltp
-
-                    # 3. Standard Practical Target exit (Only if trailing stop is NOT active)
-                    elif not trailing_active and live_pe_ltp >= active_target:
-                        logger.info("🟢 [PE EXIT - TARGET HIT] PE LTP ₹%.2f hit Practical Target ₹%.2f", live_pe_ltp, active_target)
-                        send_mobile_alert(f"🟢 *PE EXIT - TARGET REACHED*\n\n"
-                                          f"Reason: Practical Target (₹{active_target:.2f}) reached\n"
-                                          f"Contract: *{active_contract.trading_symbol}*\n"
-                                          f"Exit Price: ₹{live_pe_ltp:.2f} (Entry: ₹{active_entry_price:.2f})\n"
-                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
-                        
-                        if execution_mode == "LIVE":
-                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_pe_ltp)
-                        
-                        excel_tracker.add_order({
-                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                            "mode": execution_mode,
-                            "state": "EXIT_TP",
-                            "trading_symbol": active_contract.trading_symbol,
-                            "price": live_pe_ltp,
-                            "qty": lot_size * 20,
-                            "trades_count": trades_completed + 1
-                        })
-                        
-                        bot_state = "IDLE"
-                        active_contract = None
-                        trades_completed += 1
-                        trailing_active = False
-                        peak_price = 0.0
-                        recent_ce_low = live_ce_ltp
-                        recent_pe_low = live_pe_ltp
-
-                # 4. Save previous LTPs for sharp bounce tracking
-                previous_ce_ltp = live_ce_ltp
-                previous_pe_ltp = live_pe_ltp
-
-                # 5. Format Shorter Status Line to prevent console wrapping and fix inline refresh
-                # We show the dynamic SL and Target of the current active trade in real-time
-                if bot_state == "CE_LONG":
-                    state_info = f"CE_LONG (SL ₹{active_sl:.1f} / TP ₹{active_target:.1f})"
-                elif bot_state == "PE_LONG":
-                    state_info = f"PE_LONG (SL ₹{active_sl:.1f} / TP ₹{active_target:.1f})"
-                else:
-                    state_info = "IDLE"
-                    
-                status_line = (
-                    f"[{checked_at.strftime('%H:%M:%S')}] [{execution_mode}] {state_info} | "
-                    f"Trades: {trades_completed}/{max_trades_per_day} | Spot: {live_spot:.2f} | "
-                    f"CE: ₹{live_ce_ltp:.2f} | PE: ₹{live_pe_ltp:.2f}"
-                )
-
-                if is_github_actions:
-                    # Log to stdout only once every 60 seconds on GitHub Actions to prevent log spam
-                    if loop_counter % 60 == 1 or loop_counter == 1:
-                        logger.info(status_line)
-                else:
-                    # Inline refresh with carriage return and line clearing ANSI escape sequence for perfect same-line refresh
-                    sys.stdout.write(f"\r\033[2K{status_line}")
-                    sys.stdout.flush()
+                status_line = f"\r[{checked_at.strftime('%H:%M:%S')}] Spot: {live_spot:.2f} | CE {ce_contract.trading_symbol} LTP: ₹{live_ce_ltp:.2f} (Low ₹{grid.ce_leg.epm_lower_range:.2f}) | PE {pe_contract.trading_symbol} LTP: ₹{live_pe_res_ltp:.2f} (Low ₹{grid.pe_leg.epm_lower_range:.2f})"
+                sys.stdout.write(status_line.ljust(110))
+                sys.stdout.flush()
 
         except KeyboardInterrupt:
             sys.stdout.write("\n")
