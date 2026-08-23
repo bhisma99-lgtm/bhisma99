@@ -446,6 +446,108 @@ def create_authenticated_smartapi_client() -> Any:
 # 5. MAIN CLOUD RUNNER
 # =========================================================================
 
+def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str) -> tuple[float | None, float | None]:
+    """Fetch the current 15-minute candle's Open and Low prices from SmartAPI.
+    Returns (open, low) on success, or (None, None) on error.
+    """
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(minutes=45)
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "FIFTEEN_MINUTE",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if candles:
+                last_candle = candles[-1]
+                if len(last_candle) >= 4:
+                    c_open = float(last_candle[1])
+                    c_low = float(last_candle[3])
+                    return c_open, c_low
+    except Exception as e:
+        logger.debug("Error fetching 15m candle OHLC: %s", e)
+    return None, None
+
+
+def check_active_position_qty(smart_api: Any, symbol_token: str) -> int | None:
+    """Fetch active positions from Angel One SmartAPI and return the net quantity for the given token.
+    Returns None if the API call fails, to prevent false positive manual closure triggers.
+    """
+    try:
+        res = smart_api.position()
+        if isinstance(res, dict) and res.get("status") is True:
+            positions_list = res.get("data")
+            if positions_list is not None:
+                for pos in positions_list:
+                    token = str(pos.get("symboltoken") or pos.get("token") or "").strip()
+                    if token == str(symbol_token).strip():
+                        return abs(int(pos.get("netqty") or 0))
+                return 0  # Contract not found in position list means quantity is 0
+    except Exception as e:
+        logger.warning("Error fetching active positions from SmartAPI: %s", e)
+    return None
+
+
+def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str, quantity: int, ltp: float) -> Any:
+    """Submit a MARKET sell order first. If it fails, immediately place a LIMIT sell order
+    at a lower price (LTP - 10 points) to guarantee immediate execution as a marketable limit order.
+    """
+    # 1. Try Market Order
+    try:
+        order_params = {
+            "variety": "NORMAL",
+            "tradingsymbol": trading_symbol,
+            "symboltoken": symbol_token,
+            "transactiontype": "SELL",
+            "exchange": "BFO",
+            "ordertype": "MARKET",
+            "producttype": "INTRADAY",
+            "duration": "DAY",
+            "price": "0",
+            "squareoff": "0",
+            "stoploss": "0",
+            "quantity": str(quantity),
+        }
+        order_id = smart_api.placeOrder(order_params)
+        if order_id:
+            logger.info("⚡ [MARKET SELL ORDER SUCCESS] Order ID: %s", order_id)
+            return order_id
+    except Exception as exc:
+        logger.warning("Market sell failed, attempting failsafe Limit sell: %s", exc)
+    
+    # 2. Try Failsafe Limit Order (Sell at LTP - 10 points to guarantee execution)
+    try:
+        limit_price = max(2.0, float(ltp) - 10.0)
+        limit_price_str = f"{limit_price:.2f}"
+        
+        order_params = {
+            "variety": "NORMAL",
+            "tradingsymbol": trading_symbol,
+            "symboltoken": symbol_token,
+            "transactiontype": "SELL",
+            "exchange": "BFO",
+            "ordertype": "LIMIT",
+            "producttype": "INTRADAY",
+            "duration": "DAY",
+            "price": limit_price_str,
+            "squareoff": "0",
+            "stoploss": "0",
+            "quantity": str(quantity),
+        }
+        order_id = smart_api.placeOrder(order_params)
+        logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] Price: %s | Order ID: %s", limit_price_str, order_id)
+        return order_id
+    except Exception as exc:
+        logger.error("❌ Failsafe Sell Failed: %s", exc)
+        send_mobile_alert(f"⚠️ *CRITICAL: SELL ORDER FAILED*\nCould not execute sell for {trading_symbol}. Please close manually!")
+        return None
+
+
 def run_cloud_bot() -> None:
     logger.info("🚀 Starting Standalone Cloud SENSEX Options Bot...")
     excel_tracker = ExcelTracker()
@@ -455,6 +557,7 @@ def run_cloud_bot() -> None:
     # Get Spot Price
     spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
     spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else 77500.0
+    spot_open = float(spot_res["data"]["open"]) if isinstance(spot_res, dict) and spot_res.get("data") and spot_res["data"].get("open") else spot_price
 
     # Get VIX
     vix_res = smart_api.ltpData("NSE", "INDIA VIX", "99926017")
@@ -567,6 +670,30 @@ def run_cloud_bot() -> None:
     is_continuous = "--once" not in sys.argv
     execution_mode = "LIVE" if "--live" in sys.argv else "PAPER"
 
+    # State Machine Variables
+    bot_state = "IDLE"  # Options: "IDLE", "CE_LONG", "PE_LONG"
+    trades_completed = 0
+    max_trades_per_day = 2
+    active_contract = None
+    active_entry_price = 0.0
+    active_sl = 0.0
+    active_target = 0.0
+    entry_time = None
+    lot_size = 1
+    loop_counter = 0
+    is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+
+    # Trailing Stop-Loss Variables
+    original_sl_distance = 0.0
+    trailing_active = False
+    peak_price = 0.0
+
+    # Memory of lowest prices observed in IDLE state for bounce SL tracking
+    recent_ce_low = ce_ltp
+    recent_pe_low = pe_ltp
+    previous_ce_ltp = ce_ltp
+    previous_pe_ltp = pe_ltp
+
     if is_continuous:
         logger.info("🔄 Entering continuous monitoring loop (Mode: %s, Refreshing 1s in-place)...", execution_mode)
         tg_listener = TelegramCommandListener(os.environ.get("TELEGRAM_BOT_TOKEN"))
@@ -574,6 +701,7 @@ def run_cloud_bot() -> None:
             while True:
                 time.sleep(poll_interval)
                 checked_at = datetime.now(IST)
+                loop_counter += 1
 
                 # Check Telegram for remote commands ('LIVE [LOTS]', 'DEMO', 'STOP')
                 cmd, remote_lots = tg_listener.get_new_command()
@@ -602,11 +730,374 @@ def run_cloud_bot() -> None:
                 live_pe_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
 
                 live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
-                live_pe_res_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
+                live_pe_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
 
-                status_line = f"\r[{checked_at.strftime('%H:%M:%S')}] [{execution_mode}] Spot: {live_spot:.2f} | CE {ce_contract.strike:.0f}: ₹{live_ce_ltp:.2f} (Low ₹{grid.ce_leg.epm_lower_range:.2f}, High ₹{grid.ce_leg.target_epm:.2f}) | PE {pe_contract.strike:.0f}: ₹{live_pe_res_ltp:.2f} (Low ₹{grid.pe_leg.epm_lower_range:.2f}, High ₹{grid.pe_leg.target_epm:.2f})"
-                sys.stdout.write(status_line.ljust(110))
-                sys.stdout.flush()
+                # 1. Update Recent Lows while IDLE
+                if bot_state == "IDLE":
+                    recent_ce_low = min(recent_ce_low, live_ce_ltp)
+                    recent_pe_low = min(recent_pe_low, live_pe_ltp)
+
+                # 2. Check for Manual position closure on Broker (LIVE mode only)
+                if execution_mode == "LIVE" and bot_state in ("CE_LONG", "PE_LONG") and active_contract:
+                    real_qty = check_active_position_qty(smart_api, active_contract.symbol_token)
+                    if real_qty == 0:
+                        logger.info("🚨 [MANUAL CLOSURE DETECTED] Position for %s has been closed manually on broker. Resetting bot state to IDLE.", active_contract.trading_symbol)
+                        send_mobile_alert(f"🚨 *MANUAL POSITION CLOSURE DETECTED*\n"
+                                          f"Position for *{active_contract.trading_symbol}* was closed manually on your broker app.\n"
+                                          f"Resetting bot state to *IDLE*.")
+                        
+                        # Log manual exit to Excel Tracker
+                        excel_tracker.add_order({
+                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": "LIVE",
+                            "state": "MANUAL_EXIT",
+                            "trading_symbol": active_contract.trading_symbol,
+                            "price": live_ce_ltp if bot_state == "CE_LONG" else live_pe_ltp,
+                            "qty": lot_size * 20,
+                            "trades_count": trades_completed + 1
+                        })
+                        
+                        bot_state = "IDLE"
+                        active_contract = None
+                        trades_completed += 1
+                        # Reset recent low tracking
+                        recent_ce_low = live_ce_ltp
+                        recent_pe_low = live_pe_ltp
+
+                # 3. State Machine Signal Evaluation
+                if bot_state == "IDLE":
+                    if trades_completed >= max_trades_per_day:
+                        pass
+                    else:
+                        # --- CE ENTRY SIGNAL EVALUATION ---
+                        ce_low_level = grid.ce_leg.epm_lower_range
+                        
+                        # Case 1: At or near EPM Low (+/- 2 points) and bouncing up (rising tick) - NO NEED TO WAIT FOR OPEN
+                        is_at_or_near_low_ce = (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp > previous_ce_ltp)
+                        
+                        # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
+                        is_broken_low_bounce_ce = False
+                        ce_candle_low_sl = ce_low_level - 15.0  # Safe fallback
+                        
+                        if (ce_low_level - 20 <= live_ce_ltp < ce_low_level) and (live_spot >= spot_open):
+                            c_open, c_low = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
+                            if c_open is not None and c_low is not None:
+                                if live_ce_ltp >= c_open:
+                                    is_broken_low_bounce_ce = True
+                                    ce_candle_low_sl = c_low
+
+                        # Determine if we have a valid CE Entry
+                        ce_entry_signal = False
+                        active_sl_ce = grid.ce_leg.sl_auto
+                        entry_type_str_ce = ""
+                        
+                        if is_at_or_near_low_ce:
+                            ce_entry_signal = True
+                            active_sl_ce = grid.ce_leg.sl_auto
+                            entry_type_str_ce = "At/Near EPM Low Bounce"
+                        elif is_broken_low_bounce_ce:
+                            ce_entry_signal = True
+                            # SL is Candle Low minus 3 points
+                            active_sl_ce = max(1.0, ce_candle_low_sl - 3.0)
+                            entry_type_str_ce = "EPM Break & 15m Candle Open Bounce"
+
+                        # Trigger CE Long Entry
+                        if ce_entry_signal:
+                            bot_state = "CE_LONG"
+                            active_contract = ce_contract
+                            active_entry_price = live_ce_ltp
+                            active_target = grid.ce_leg.practical_target
+                            active_sl = active_sl_ce
+                            entry_time = datetime.now(IST)
+                            qty_to_trade = lot_size * 20
+                            original_sl_distance = max(1.0, active_entry_price - active_sl)
+                            trailing_active = False
+                            peak_price = active_entry_price
+                            
+                            logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_ce_ltp, entry_type_str_ce, active_sl, active_target)
+                            send_mobile_alert(f"🟢 *CE ENTRY SIGNAL ALIGNED ({entry_type_str_ce})*\n\n"
+                                              f"Contract: *{active_contract.trading_symbol}*\n"
+                                              f"Entry Price: ₹{active_entry_price:.2f}\n"
+                                              f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
+                                              f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                            
+                            # Place Live Order
+                            if execution_mode == "LIVE":
+                                submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
+                            
+                            # Log to Excel
+                            excel_tracker.add_order({
+                                "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                                "mode": execution_mode,
+                                "state": "ENTRY",
+                                "trading_symbol": active_contract.trading_symbol,
+                                "price": active_entry_price,
+                                "qty": qty_to_trade,
+                                "trades_count": trades_completed + 1
+                            })
+
+                        # --- PE ENTRY SIGNAL EVALUATION ---
+                        else:
+                            pe_low_level = grid.pe_leg.epm_lower_range
+                            
+                            # Case 1: At or near EPM Low (+/- 2 points) and bouncing up (rising tick) - NO NEED TO WAIT FOR OPEN
+                            is_at_or_near_low_pe = (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp > previous_pe_ltp)
+                            
+                            # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
+                            is_broken_low_bounce_pe = False
+                            pe_candle_low_sl = pe_low_level - 15.0  # Safe fallback
+                            
+                            if (pe_low_level - 20 <= live_pe_ltp < pe_low_level) and (live_spot < spot_open):
+                                c_open, c_low = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
+                                if c_open is not None and c_low is not None:
+                                    if live_pe_ltp >= c_open:
+                                        is_broken_low_bounce_pe = True
+                                        pe_candle_low_sl = c_low
+
+                            # Determine if we have a valid PE Entry
+                            pe_entry_signal = False
+                            active_sl_pe = grid.pe_leg.sl_auto
+                            entry_type_str_pe = ""
+                            
+                            if is_at_or_near_low_pe:
+                                pe_entry_signal = True
+                                active_sl_pe = grid.pe_leg.sl_auto
+                                entry_type_str_pe = "At/Near EPM Low Bounce"
+                            elif is_broken_low_bounce_pe:
+                                pe_entry_signal = True
+                                # SL is Candle Low minus 3 points
+                                active_sl_pe = max(1.0, pe_candle_low_sl - 3.0)
+                                entry_type_str_pe = "EPM Break & 15m Candle Open Bounce"
+
+                            # Trigger PE Long Entry
+                            if pe_entry_signal:
+                                bot_state = "PE_LONG"
+                                active_contract = pe_contract
+                                active_entry_price = live_pe_ltp
+                                active_target = grid.pe_leg.practical_target
+                                active_sl = active_sl_pe
+                                entry_time = datetime.now(IST)
+                                qty_to_trade = lot_size * 20
+                                original_sl_distance = max(1.0, active_entry_price - active_sl)
+                                trailing_active = False
+                                peak_price = active_entry_price
+                                
+                                logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
+                                send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
+                                                  f"Contract: *{active_contract.trading_symbol}*\n"
+                                                  f"Entry Price: ₹{active_entry_price:.2f}\n"
+                                                  f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
+                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                                
+                                # Place Live Order
+                                if execution_mode == "LIVE":
+                                    submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
+                                
+                                # Log to Excel
+                                excel_tracker.add_order({
+                                    "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                                    "mode": execution_mode,
+                                    "state": "ENTRY",
+                                    "trading_symbol": active_contract.trading_symbol,
+                                    "price": active_entry_price,
+                                    "qty": qty_to_trade,
+                                    "trades_count": trades_completed + 1
+                                })
+
+                elif bot_state == "CE_LONG":
+                    # --- CE EXIT EVALUATION ---
+                    # Calculate 3X risk-reward Take Profit target based on original risk distance
+                    surge_target_price = active_entry_price + (3 * original_sl_distance)
+                    
+                    elapsed_mins = (datetime.now(IST) - entry_time).total_seconds() / 60.0
+                    is_surge_window = (elapsed_mins <= 60.0)  # Within 1-2 30-min candles (60 mins)
+                    
+                    # 1. Check for Surge Trailing SL activation/update (Only in surge window and if reached 3X)
+                    if is_surge_window and live_ce_ltp >= surge_target_price:
+                        if not trailing_active:
+                            trailing_active = True
+                            peak_price = live_ce_ltp
+                            active_sl = max(active_sl, live_ce_ltp - 5.0)  # Trail 5 points behind
+                            logger.info("🔥 [SURGE TRAILING ACTIVATED] CE peak reached ₹%.2f. Trailing SL activated at ₹%.2f.", peak_price, active_sl)
+                            send_mobile_alert(f"🔥 *SURGE TRAILING ACTIVATED*\n\n"
+                                              f"Contract: *{active_contract.trading_symbol}*\n"
+                                              f"Peak Price: ₹{peak_price:.2f}\n"
+                                              f"New Trailing SL: ₹{active_sl:.2f} (Locked-in Profit!)")
+                        elif live_ce_ltp > peak_price:
+                            peak_price = live_ce_ltp
+                            active_sl = max(active_sl, live_ce_ltp - 5.0)  # Lock in higher trailing stop
+                            logger.info("📈 [TRAILING SL RAISED] CE peak rose to ₹%.2f. New trailing SL: ₹%.2f.", peak_price, active_sl)
+                    
+                    # 2. Stop Loss or Trailing Stop Loss exit
+                    if live_ce_ltp <= active_sl:
+                        exit_state_str = "EXIT_SL" if not trailing_active else "EXIT_TSL"
+                        exit_title_str = "STOP LOSS HIT" if not trailing_active else "TRAILING SL HIT (PROFIT BOOKED!)"
+                        
+                        logger.info("🔴 [CE EXIT - %s] CE LTP ₹%.2f hit SL ₹%.2f", exit_title_str, live_ce_ltp, active_sl)
+                        send_mobile_alert(f"🔴 *CE EXIT - {exit_title_str}*\n\n"
+                                          f"Contract: *{active_contract.trading_symbol}*\n"
+                                          f"Exit Price: ₹{live_ce_ltp:.2f}\n"
+                                          f"SL: ₹{active_sl:.2f} | Practical Target: ₹{active_target:.2f}\n"
+                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
+                        
+                        if execution_mode == "LIVE":
+                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_ce_ltp)
+                        
+                        excel_tracker.add_order({
+                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": execution_mode,
+                            "state": exit_state_str,
+                            "trading_symbol": active_contract.trading_symbol,
+                            "price": live_ce_ltp,
+                            "qty": lot_size * 20,
+                            "trades_count": trades_completed + 1
+                        })
+                        
+                        bot_state = "IDLE"
+                        active_contract = None
+                        trades_completed += 1
+                        trailing_active = False
+                        peak_price = 0.0
+                        recent_ce_low = live_ce_ltp
+                        recent_pe_low = live_pe_ltp
+
+                    # 3. Standard Practical Target exit (Only if trailing stop is NOT active)
+                    elif not trailing_active and live_ce_ltp >= active_target:
+                        logger.info("🟢 [CE EXIT - TARGET HIT] CE LTP ₹%.2f hit Practical Target ₹%.2f", live_ce_ltp, active_target)
+                        send_mobile_alert(f"🟢 *CE EXIT - TARGET REACHED*\n\n"
+                                          f"Reason: Practical Target (₹{active_target:.2f}) reached\n"
+                                          f"Contract: *{active_contract.trading_symbol}*\n"
+                                          f"Exit Price: ₹{live_ce_ltp:.2f} (Entry: ₹{active_entry_price:.2f})\n"
+                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
+                        
+                        if execution_mode == "LIVE":
+                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_ce_ltp)
+                        
+                        excel_tracker.add_order({
+                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": execution_mode,
+                            "state": "EXIT_TP",
+                            "trading_symbol": active_contract.trading_symbol,
+                            "price": live_ce_ltp,
+                            "qty": lot_size * 20,
+                            "trades_count": trades_completed + 1
+                        })
+                        
+                        bot_state = "IDLE"
+                        active_contract = None
+                        trades_completed += 1
+                        trailing_active = False
+                        peak_price = 0.0
+                        recent_ce_low = live_ce_ltp
+                        recent_pe_low = live_pe_ltp
+
+                elif bot_state == "PE_LONG":
+                    # --- PE EXIT EVALUATION ---
+                    # Calculate 3X risk-reward Take Profit target based on original risk distance
+                    surge_target_price = active_entry_price + (3 * original_sl_distance)
+                    
+                    elapsed_mins = (datetime.now(IST) - entry_time).total_seconds() / 60.0
+                    is_surge_window = (elapsed_mins <= 60.0)  # Within 1-2 30-min candles (60 mins)
+                    
+                    # 1. Check for Surge Trailing SL activation/update (Only in surge window and if reached 3X)
+                    if is_surge_window and live_pe_ltp >= surge_target_price:
+                        if not trailing_active:
+                            trailing_active = True
+                            peak_price = live_pe_ltp
+                            active_sl = max(active_sl, live_pe_ltp - 5.0)  # Trail 5 points behind
+                            logger.info("🔥 [SURGE TRAILING ACTIVATED] PE peak reached ₹%.2f. Trailing SL activated at ₹%.2f.", peak_price, active_sl)
+                            send_mobile_alert(f"🔥 *SURGE TRAILING ACTIVATED*\n\n"
+                                              f"Contract: *{active_contract.trading_symbol}*\n"
+                                              f"Peak Price: ₹{peak_price:.2f}\n"
+                                              f"New Trailing SL: ₹{active_sl:.2f} (Locked-in Profit!)")
+                        elif live_pe_ltp > peak_price:
+                            peak_price = live_pe_ltp
+                            active_sl = max(active_sl, live_pe_ltp - 5.0)  # Lock in higher trailing stop
+                            logger.info("📈 [TRAILING SL RAISED] PE peak rose to ₹%.2f. New trailing SL: ₹%.2f.", peak_price, active_sl)
+                    
+                    # 2. Stop Loss or Trailing Stop Loss exit
+                    if live_pe_ltp <= active_sl:
+                        exit_state_str = "EXIT_SL" if not trailing_active else "EXIT_TSL"
+                        exit_title_str = "STOP LOSS HIT" if not trailing_active else "TRAILING SL HIT (PROFIT BOOKED!)"
+                        
+                        logger.info("🔴 [PE EXIT - %s] PE LTP ₹%.2f hit SL ₹%.2f", exit_title_str, live_pe_ltp, active_sl)
+                        send_mobile_alert(f"🔴 *PE EXIT - {exit_title_str}*\n\n"
+                                          f"Contract: *{active_contract.trading_symbol}*\n"
+                                          f"Exit Price: ₹{live_pe_ltp:.2f}\n"
+                                          f"SL: ₹{active_sl:.2f} | Practical Target: ₹{active_target:.2f}\n"
+                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
+                        
+                        if execution_mode == "LIVE":
+                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_pe_ltp)
+                        
+                        excel_tracker.add_order({
+                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": execution_mode,
+                            "state": exit_state_str,
+                            "trading_symbol": active_contract.trading_symbol,
+                            "price": live_pe_ltp,
+                            "qty": lot_size * 20,
+                            "trades_count": trades_completed + 1
+                        })
+                        
+                        bot_state = "IDLE"
+                        active_contract = None
+                        trades_completed += 1
+                        trailing_active = False
+                        peak_price = 0.0
+                        recent_ce_low = live_ce_ltp
+                        recent_pe_low = live_pe_ltp
+
+                    # 3. Standard Practical Target exit (Only if trailing stop is NOT active)
+                    elif not trailing_active and live_pe_ltp >= active_target:
+                        logger.info("🟢 [PE EXIT - TARGET HIT] PE LTP ₹%.2f hit Practical Target ₹%.2f", live_pe_ltp, active_target)
+                        send_mobile_alert(f"🟢 *PE EXIT - TARGET REACHED*\n\n"
+                                          f"Reason: Practical Target (₹{active_target:.2f}) reached\n"
+                                          f"Contract: *{active_contract.trading_symbol}*\n"
+                                          f"Exit Price: ₹{live_pe_ltp:.2f} (Entry: ₹{active_entry_price:.2f})\n"
+                                          f"Trades: {trades_completed + 1}/{max_trades_per_day}")
+                        
+                        if execution_mode == "LIVE":
+                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_pe_ltp)
+                        
+                        excel_tracker.add_order({
+                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": execution_mode,
+                            "state": "EXIT_TP",
+                            "trading_symbol": active_contract.trading_symbol,
+                            "price": live_pe_ltp,
+                            "qty": lot_size * 20,
+                            "trades_count": trades_completed + 1
+                        })
+                        
+                        bot_state = "IDLE"
+                        active_contract = None
+                        trades_completed += 1
+                        trailing_active = False
+                        peak_price = 0.0
+                        recent_ce_low = live_ce_ltp
+                        recent_pe_low = live_pe_ltp
+
+                # 4. Save previous LTPs for sharp bounce tracking
+                previous_ce_ltp = live_ce_ltp
+                previous_pe_ltp = live_pe_ltp
+
+                # 5. Format Status Line
+                status_line = (
+                    f"[{checked_at.strftime('%H:%M:%S')}] [{execution_mode}] State: {bot_state} "
+                    f"(Trades: {trades_completed}/{max_trades_per_day}) | Spot: {live_spot:.2f} | "
+                    f"CE {ce_contract.strike:.0f}: ₹{live_ce_ltp:.2f} (L ₹{grid.ce_leg.epm_lower_range:.2f}, H ₹{grid.ce_leg.target_epm:.2f}) | "
+                    f"PE {pe_contract.strike:.0f}: ₹{live_pe_ltp:.2f} (L ₹{grid.pe_leg.epm_lower_range:.2f}, H ₹{grid.pe_leg.target_epm:.2f})"
+                )
+
+                if is_github_actions:
+                    # Log to stdout only once every 60 seconds on GitHub Actions to prevent log spam
+                    if loop_counter % 60 == 1 or loop_counter == 1:
+                        logger.info(status_line)
+                else:
+                    # Inline refresh with carriage return for local terminals
+                    sys.stdout.write(f"\r{status_line}".ljust(140))
+                    sys.stdout.flush()
 
         except KeyboardInterrupt:
             sys.stdout.write("\n")
