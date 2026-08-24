@@ -36,6 +36,18 @@ try:
 except ImportError:
     pass
 
+# Reconfigure standard streams to UTF-8 to prevent UnicodeEncodeError (charmap) when printing emojis in Windows consoles
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if sys.stderr.encoding != 'utf-8':
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -604,6 +616,128 @@ def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str)
     return None, None
 
 
+def get_current_time_slot() -> str:
+    import json
+    now_dt = datetime.now(IST)
+    m_of_day = now_dt.hour * 60 + now_dt.minute
+    if m_of_day < (9 * 60 + 45):  # Before 9:45 AM
+        return "09:15"
+    elif m_of_day < (12 * 60 + 15):  # Before 12:15 PM
+        return "09:45"
+    else:
+        return "12:15"
+
+
+def load_bot_memory() -> dict | None:
+    import json
+    path = Path("bot_state_memory.json")
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        if data.get("date") == today_str:
+            return data
+    except Exception as e:
+        logger.warning("Failed to load bot memory: %s", e)
+    return None
+
+
+def save_bot_memory_full(trades_completed: int, grid_time_slot: str, grid: EPMMasterGrid, ce_contract: OptionContract, pe_contract: OptionContract, bot_state: str, active_contract: OptionContract | None, active_entry_price: float, active_sl: float, active_target: float, peak_price: float, trailing_active: bool, offloaded: bool, lot_size: int, entry_time: datetime | None) -> None:
+    import json
+    try:
+        data = {
+            "date": datetime.now(IST).strftime("%Y-%m-%d"),
+            "trades_completed": trades_completed,
+            "grid_time_slot": grid_time_slot,
+            "bot_state": bot_state,
+            "active_entry_price": active_entry_price,
+            "active_sl": active_sl,
+            "active_target": active_target,
+            "peak_price": peak_price,
+            "trailing_active": trailing_active,
+            "offloaded": offloaded,
+            "lot_size": lot_size,
+            "entry_time": entry_time.isoformat() if entry_time else None,
+            "grid": {
+                "spot": grid.spot,
+                "vix": grid.vix,
+                "dte": grid.dte,
+                "index_move": grid.index_move,
+                "ce_leg": {
+                    "strike": grid.ce_leg.strike,
+                    "ltp": grid.ce_leg.ltp,
+                    "delta": grid.ce_leg.delta,
+                    "target_epm": grid.ce_leg.target_epm,
+                    "epm_lower_range": grid.ce_leg.epm_lower_range,
+                    "sl_auto": grid.ce_leg.sl_auto,
+                    "practical_target": grid.ce_leg.practical_target,
+                    "option_type": grid.ce_leg.option_type
+                },
+                "pe_leg": {
+                    "strike": grid.pe_leg.strike,
+                    "ltp": grid.pe_leg.ltp,
+                    "delta": grid.pe_leg.delta,
+                    "target_epm": grid.pe_leg.target_epm,
+                    "epm_lower_range": grid.pe_leg.epm_lower_range,
+                    "sl_auto": grid.pe_leg.sl_auto,
+                    "practical_target": grid.pe_leg.practical_target,
+                    "option_type": grid.pe_leg.option_type
+                }
+            },
+            "ce_contract": {
+                "exchange": ce_contract.exchange,
+                "trading_symbol": ce_contract.trading_symbol,
+                "symbol_token": ce_contract.symbol_token,
+                "expiry": ce_contract.expiry,
+                "strike": ce_contract.strike,
+                "option_type": ce_contract.option_type,
+                "delta": ce_contract.delta
+            },
+            "pe_contract": {
+                "exchange": pe_contract.exchange,
+                "trading_symbol": pe_contract.trading_symbol,
+                "symbol_token": pe_contract.symbol_token,
+                "expiry": pe_contract.expiry,
+                "strike": pe_contract.strike,
+                "option_type": pe_contract.option_type,
+                "delta": pe_contract.delta
+            }
+        }
+        with open("bot_state_memory.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        logger.info("💾 Bot state and active trade memory saved successfully.")
+    except Exception as e:
+        logger.warning("Failed to save bot active memory: %s", e)
+
+
+def save_bot_memory(trades_completed: int, grid_time_slot: str, grid: EPMMasterGrid, ce_contract: OptionContract, pe_contract: OptionContract) -> None:
+    save_bot_memory_full(trades_completed, grid_time_slot, grid, ce_contract, pe_contract, "IDLE", None, 0.0, 0.0, 0.0, 0.0, False, False, 1, None)
+
+
+def get_current_5m_candles(smart_api: Any, exchange: str, symbol_token: str) -> list:
+    """Fetch recent 5-minute candles from SmartAPI.
+    Each candle is: [timestamp, open, high, low, close, volume]
+    """
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(minutes=30)
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "FIVE_MINUTE",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            return res["data"]
+    except Exception as e:
+        logger.debug("Error fetching 5m candles: %s", e)
+    return []
+
+
 def check_active_position_qty(smart_api: Any, symbol_token: str) -> int | None:
     """Fetch active positions from Angel One SmartAPI and return the net quantity for the given token.
     Returns None if the API call fails, to prevent false positive manual closure triggers.
@@ -684,134 +818,300 @@ def run_cloud_bot() -> None:
 
     smart_api = create_authenticated_smartapi_client()
 
+    current_slot = get_current_time_slot()
+    mem = load_bot_memory()
+
+    trades_completed = 0
+    grid = None
+    ce_contract = None
+    pe_contract = None
+    spot_price = 77500.0
+    spot_open = 77500.0
+    vix_val = 13.5
+    dte_days = 4.0
+    ce_ltp = 500.0
+    pe_ltp = 300.0
+    grid_from_memory = False
+
     # Get Spot Price
-    spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
-    spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else 77500.0
-    spot_open = float(spot_res["data"]["open"]) if isinstance(spot_res, dict) and spot_res.get("data") and spot_res["data"].get("open") else spot_price
+    try:
+        spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
+        spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else 77500.0
+        spot_open = float(spot_res["data"]["open"]) if isinstance(spot_res, dict) and spot_res.get("data") and spot_res["data"].get("open") else spot_price
+    except Exception:
+        pass
 
     # Get VIX
-    vix_res = smart_api.ltpData("NSE", "INDIA VIX", "99926017")
-    vix_val = float(vix_res["data"]["ltp"]) if isinstance(vix_res, dict) and vix_res.get("data") else 13.5
+    try:
+        vix_res = smart_api.ltpData("NSE", "INDIA VIX", "99926017")
+        vix_val = float(vix_res["data"]["ltp"]) if isinstance(vix_res, dict) and vix_res.get("data") else 13.5
+    except Exception:
+        pass
 
-    # Search contracts
-    search_res = smart_api.searchScrip("BFO", "SENSEX")
-    rows = search_res.get("data", []) if isinstance(search_res, dict) else []
+    if mem is not None:
+        trades_completed = mem.get("trades_completed", 0)
+        # If the saved memory belongs to the current time slot, reuse its EPM and contract details!
+        if mem.get("grid_time_slot") == current_slot:
+            try:
+                logger.info("🔮 [RECALL MEMORY] Recalled last stored EPM for slot %s.", current_slot)
+                grid_from_memory = True
+                
+                # Reconstruct contracts
+                ce_c_data = mem["ce_contract"]
+                ce_contract = OptionContract(
+                    exchange=ce_c_data["exchange"],
+                    trading_symbol=ce_c_data["trading_symbol"],
+                    symbol_token=ce_c_data["symbol_token"],
+                    expiry=ce_c_data["expiry"],
+                    strike=ce_c_data["strike"],
+                    option_type=ce_c_data["option_type"],
+                    delta=ce_c_data["delta"]
+                )
+                
+                pe_c_data = mem["pe_contract"]
+                pe_contract = OptionContract(
+                    exchange=pe_c_data["exchange"],
+                    trading_symbol=pe_c_data["trading_symbol"],
+                    symbol_token=pe_c_data["symbol_token"],
+                    expiry=pe_c_data["expiry"],
+                    strike=pe_c_data["strike"],
+                    option_type=pe_c_data["option_type"],
+                    delta=pe_c_data["delta"]
+                )
+                
+                # Reconstruct grid
+                grid_data = mem["grid"]
+                ce_leg_data = grid_data["ce_leg"]
+                pe_leg_data = grid_data["pe_leg"]
+                
+                ce_leg = MasterGridLeg(
+                    option_type=ce_leg_data.get("option_type", "CE"),
+                    strike=ce_leg_data["strike"],
+                    ltp=ce_leg_data["ltp"],
+                    delta=ce_leg_data["delta"],
+                    target_epm=ce_leg_data["target_epm"],
+                    epm_lower_range=ce_leg_data["epm_lower_range"],
+                    sl_auto=ce_leg_data["sl_auto"],
+                    practical_target=ce_leg_data["practical_target"]
+                )
+                
+                pe_leg = MasterGridLeg(
+                    option_type=pe_leg_data.get("option_type", "PE"),
+                    strike=pe_leg_data["strike"],
+                    ltp=pe_leg_data["ltp"],
+                    delta=pe_leg_data["delta"],
+                    target_epm=pe_leg_data["target_epm"],
+                    epm_lower_range=pe_leg_data["epm_lower_range"],
+                    sl_auto=pe_leg_data["sl_auto"],
+                    practical_target=pe_leg_data["practical_target"]
+                )
+                
+                grid = EPMMasterGrid(
+                    spot=grid_data["spot"],
+                    vix=grid_data["vix"],
+                    dte=grid_data["dte"],
+                    dte_sqrt=math.sqrt(grid_data["dte"] / 365.0),
+                    index_move=grid_data["index_move"],
+                    noise_10=grid_data["index_move"] * 0.10,
+                    lower_index=grid_data["spot"] - grid_data["index_move"],
+                    upper_index=grid_data["spot"] + grid_data["index_move"],
+                    ce_leg=ce_leg,
+                    pe_leg=pe_leg
+                )
+                
+                spot_price = grid.spot
+                vix_val = grid.vix
+                dte_days = grid.dte
+                ce_ltp = ce_leg.ltp
+                pe_ltp = pe_leg.ltp
 
-    contracts: list[OptionContract] = []
-    for r in rows:
-        symbol = str(r.get("tradingsymbol") or "").strip()
-        if not symbol or not (symbol.endswith("CE") or symbol.endswith("PE")):
-            continue
-        opt_type = "CE" if symbol.endswith("CE") else "PE"
-        token = str(r.get("symboltoken") or "").strip()
+                # Restore active trade variables if any
+                saved_bot_state = mem.get("bot_state", "IDLE")
+                if saved_bot_state in ("CE_LONG", "PE_LONG"):
+                    bot_state = saved_bot_state
+                    active_entry_price = mem.get("active_entry_price", 0.0)
+                    active_sl = mem.get("active_sl", 0.0)
+                    active_target = mem.get("active_target", 0.0)
+                    peak_price = mem.get("peak_price", 0.0)
+                    trailing_active = mem.get("trailing_active", False)
+                    offloaded = mem.get("offloaded", False)
+                    lot_size = mem.get("lot_size", 1)
+                    
+                    saved_entry_time = mem.get("entry_time")
+                    if saved_entry_time:
+                        entry_time = datetime.fromisoformat(saved_entry_time)
+                    
+                    if bot_state == "CE_LONG":
+                        active_contract = ce_contract
+                    else:
+                        active_contract = pe_contract
+                    
+                    logger.info("⚡ [RECALL ACTIVE POSITION] Resumed active %s trade from memory (Entry: ₹%.2f, SL: ₹%.2f, Target: ₹%.2f)", bot_state, active_entry_price, active_sl, active_target)
 
-        m_strike = re.search(r"(\d+)(?:CE|PE)$", symbol)
-        if not m_strike:
-            continue
-        num_str = m_strike.group(1)
-        strike_val = float(num_str[-5:]) if len(num_str) >= 5 else float(num_str)
+            except (KeyError, ValueError, TypeError) as exc:
+                logger.warning("⚠️ Saved memory schema mismatch. Resetting and calculating master grid cleanly: %s", exc)
+                grid = None
+                grid_from_memory = False
 
-        raw_exp = str(r.get("expiry") or "").strip()
-        if raw_exp:
-            expiry_val = raw_exp
-        else:
-            m1 = re.search(r"SENSEX(\d{2})([A-Za-z]{3})(\d+)(?:CE|PE)$", symbol)
-            m2 = re.search(r"SENSEX(\d{2})([1-9ONDond])(\d{2})(\d{5})(?:CE|PE)$", symbol)
-            if m1:
-                yy, mmm, _ = m1.groups()
-                expiry_val = f"20{yy}-{mmm.upper()}-01"
-            elif m2:
-                yy, m_code, dd, _ = m2.groups()
-                month_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "O": 10, "N": 11, "D": 12}
-                m_num = month_map.get(m_code.upper(), 8)
-                expiry_val = f"20{yy}-{m_num:02d}-{dd}"
+    if grid is None:
+        logger.info("🆕 [MASTER GRID] Calculating a new Master Grid for slot %s...", current_slot)
+        # Search contracts
+        search_res = smart_api.searchScrip("BFO", "SENSEX")
+        rows = search_res.get("data", []) if isinstance(search_res, dict) else []
+
+        contracts: list[OptionContract] = []
+        for r in rows:
+            symbol = str(r.get("tradingsymbol") or "").strip()
+            if not symbol or not (symbol.endswith("CE") or symbol.endswith("PE")):
+                continue
+            opt_type = "CE" if symbol.endswith("CE") else "PE"
+            token = str(r.get("symboltoken") or "").strip()
+
+            m_strike = re.search(r"(\d+)(?:CE|PE)$", symbol)
+            if not m_strike:
+                continue
+            num_str = m_strike.group(1)
+            strike_val = float(num_str[-5:]) if len(num_str) >= 5 else float(num_str)
+
+            raw_exp = str(r.get("expiry") or "").strip()
+            if raw_exp:
+                expiry_val = raw_exp
             else:
-                expiry_val = "2026-08-24"
+                m1 = re.search(r"SENSEX(\d{2})([A-Za-z]{3})(\d+)(?:CE|PE)$", symbol)
+                m2 = re.search(r"SENSEX(\d{2})([1-9ONDond])(\d{2})(\d{5})(?:CE|PE)$", symbol)
+                if m1:
+                    yy, mmm, _ = m1.groups()
+                    expiry_val = f"20{yy}-{mmm.upper()}-01"
+                elif m2:
+                    yy, m_code, dd, _ = m2.groups()
+                    month_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "O": 10, "N": 11, "D": 12}
+                    m_num = month_map.get(m_code.upper(), 8)
+                    expiry_val = f"20{yy}-{m_num:02d}-{dd}"
+                else:
+                    expiry_val = "2026-08-24"
 
-        dte_days, _ = calculate_dte_sqrt(expiry_val)
-        delta_val = calculate_bsm_delta(spot_price, strike_val, dte_days, vix_val, opt_type)
+            dte_days, _ = calculate_dte_sqrt(expiry_val)
+            delta_val = calculate_bsm_delta(spot_price, strike_val, dte_days, vix_val, opt_type)
 
-        try:
-            c_obj = OptionContract("BFO", symbol, token, expiry_val, strike_val, opt_type, delta_val)
-            contracts.append(c_obj)
-        except Exception:
-            continue
+            try:
+                c_obj = OptionContract("BFO", symbol, token, expiry_val, strike_val, opt_type, delta_val)
+                contracts.append(c_obj)
+            except Exception:
+                continue
 
-    ce_contract = select_nearest_itm_contract(contracts, spot_price, "CE")
-    pe_contract = select_nearest_itm_contract(contracts, spot_price, "PE")
+        ce_contract = select_nearest_itm_contract(contracts, spot_price, "CE")
+        pe_contract = select_nearest_itm_contract(contracts, spot_price, "PE")
 
-    ce_ltp_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
-    pe_ltp_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
+        ce_ltp_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
+        pe_ltp_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
 
-    ce_ltp = float(ce_ltp_res["data"]["ltp"]) if isinstance(ce_ltp_res, dict) and ce_ltp_res.get("data") else 500.0
-    pe_ltp = float(pe_ltp_res["data"]["ltp"]) if isinstance(pe_ltp_res, dict) and pe_ltp_res.get("data") else 300.0
+        ce_ltp = float(ce_ltp_res["data"]["ltp"]) if isinstance(ce_ltp_res, dict) and ce_ltp_res.get("data") else 500.0
+        pe_ltp = float(pe_ltp_res["data"]["ltp"]) if isinstance(pe_ltp_res, dict) and pe_ltp_res.get("data") else 300.0
 
-    dte_days, _ = calculate_dte_sqrt(ce_contract.expiry)
+        ce_open = float(ce_ltp_res["data"]["open"]) if isinstance(ce_ltp_res, dict) and ce_ltp_res.get("data") and ce_ltp_res["data"].get("open") else ce_ltp
+        pe_open = float(pe_ltp_res["data"]["open"]) if isinstance(pe_ltp_res, dict) and pe_ltp_res.get("data") and pe_ltp_res["data"].get("open") else pe_ltp
 
-    grid = calculate_master_grid(
-        spot=spot_price, vix=vix_val, dte=dte_days,
-        ce_ltp=ce_ltp, ce_delta=abs(ce_contract.delta), ce_strike=ce_contract.strike,
-        pe_ltp=pe_ltp, pe_delta=abs(pe_contract.delta), pe_strike=pe_contract.strike,
-        buffer=0.15
-    )
+        dte_days, _ = calculate_dte_sqrt(ce_contract.expiry)
 
-    logger.info("=========================================================================")
-    logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED")
-    logger.info("Spot: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
-    logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
-    logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
-    logger.info("=========================================================================")
+        if current_slot == "09:15":
+            grid = calculate_master_grid(
+                spot=spot_open, vix=vix_val, dte=dte_days,
+                ce_ltp=ce_open, ce_delta=abs(ce_contract.delta), ce_strike=ce_contract.strike,
+                pe_ltp=pe_open, pe_delta=abs(pe_contract.delta), pe_strike=pe_contract.strike,
+                buffer=0.15
+            )
+            # Re-align ltp variables with Open prices for EPM print & notifications
+            ce_ltp = ce_open
+            pe_ltp = pe_open
+            spot_price = spot_open
+        else:
+            grid = calculate_master_grid(
+                spot=spot_price, vix=vix_val, dte=dte_days,
+                ce_ltp=ce_ltp, ce_delta=abs(ce_contract.delta), ce_strike=ce_contract.strike,
+                pe_ltp=pe_ltp, pe_delta=abs(pe_contract.delta), pe_strike=pe_contract.strike,
+                buffer=0.15
+            )
+        # Save EPM to memory
+        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
 
-    # Send Notification
-    msg = (
-        f"🔔 *SENSEX MASTER GRID INITIALIZED*\n\n"
-        f"📈 *Spot Price*: ₹{spot_price:.2f} | *VIX*: {vix_val:.2f}%\n"
-        f"📅 *DTE*: {dte_days:.1f} Days\n\n"
-        f"🟢 *CE {int(grid.ce_leg.strike)}*:\n"
-        f"• LTP: ₹{ce_ltp:.2f} | Delta: {grid.ce_leg.delta:.3f}\n"
-        f"• EPM Low: ₹{grid.ce_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.ce_leg.sl_auto:.2f}\n"
-        f"• EPM Upper Target: ₹{grid.ce_leg.target_epm:.2f} | Practical Target: ₹{grid.ce_leg.practical_target:.2f}\n\n"
-        f"🔴 *PE {int(grid.pe_leg.strike)}*:\n"
-        f"• LTP: ₹{pe_ltp:.2f} | Delta: {-grid.pe_leg.delta:.3f}\n"
-        f"• EPM Low: ₹{grid.pe_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.pe_leg.sl_auto:.2f}\n"
-        f"• EPM Upper Target: ₹{grid.pe_leg.target_epm:.2f} | Practical Target: ₹{grid.pe_leg.practical_target:.2f}"
-    )
-    send_mobile_alert(msg)
+    if grid_from_memory:
+        logger.info("=========================================================================")
+        logger.info("SENSEX CLOUD BOT - RECALLED MASTER GRID FROM MEMORY")
+        logger.info("Spot: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
+        logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                    grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
+        logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                    grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
+        logger.info("=========================================================================")
+        
+        flash_msg = (
+            f"🔄 *RECALLED MASTER GRID FROM MEMORY*\n\n"
+            f"🟢 *CE {int(grid.ce_leg.strike)}*:\n"
+            f"• LTP/Open: ₹{ce_ltp:.2f} | EPM Low: ₹{grid.ce_leg.epm_lower_range:.2f} | SL: ₹{grid.ce_leg.sl_auto:.2f}\n"
+            f"• Target: ₹{grid.ce_leg.target_epm:.2f} | Practical: ₹{grid.ce_leg.practical_target:.2f}\n\n"
+            f"🔴 *PE {int(grid.pe_leg.strike)}*:\n"
+            f"• LTP/Open: ₹{pe_ltp:.2f} | EPM Low: ₹{grid.pe_leg.epm_lower_range:.2f} | SL: ₹{grid.pe_leg.sl_auto:.2f}\n"
+            f"• Target: ₹{grid.pe_leg.target_epm:.2f} | Practical: ₹{grid.pe_leg.practical_target:.2f}"
+        )
+        send_mobile_alert(flash_msg)
+    else:
+        logger.info("=========================================================================")
+        logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED")
+        logger.info("Spot LTP: %.2f (Open: %.2f) | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, spot_open, vix_val, dte_days, grid.index_move)
+        logger.info("CE Strike %d: LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                    grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
+        logger.info("PE Strike %d: LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                    grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
+        logger.info("=========================================================================")
 
-    # Send Commands Cheat Sheet / Tips at 9:15 AM (Safe Markdown formatting)
-    cheat_sheet_msg = (
-        "📱 *SENSEX BOT COMMANDS CHEAT SHEET*\n\n"
-        "Use these keywords during an active trade to manage your position on the go:\n\n"
-        "1. *Add Lots:* `ADD LOTS`\n"
-        "   Example: `ADD 2` (Adds 2 more lots at Market price, initial SL remains same)\n\n"
-        "2. *Set Trailing Buffer:* `BUFFER POINTS`\n"
-        "   Example: `BUFFER 10` (Sets trailing stop-loss distance to 10 points)\n\n"
-        "3. *Modify Stop-Loss:* `SL PRICE`\n"
-        "   Example: `SL 450` (Manually sets Stop Loss to ₹450)\n\n"
-        "4. *Safety Stops:* `STOP` / `HALT` / `EXIT` / `CLOSE`\n"
-        "   (Exits all active positions immediately at Market price and halts bot)\n\n"
-        "💡 *Smart Scaling (Auto-Activated):*\n"
-        "• *Surge Target (3x Risk):* Sells major portion, moves remaining runner lot SL to Cost Price.\n"
-        "• *Practical Target:* Sells major portion, moves remaining runner lot SL to Peak - 20 (wider trailing room)."
-    )
-    send_mobile_alert(cheat_sheet_msg)
+        # Send Notification
+        msg = (
+            f"🔔 *SENSEX MASTER GRID INITIALIZED*\n\n"
+            f"📈 *Spot LTP*: ₹{spot_price:.2f} (Open: ₹{spot_open:.2f}) | *VIX*: {vix_val:.2f}%\n"
+            f"📅 *DTE*: {dte_days:.1f} Days\n\n"
+            f"🟢 *CE {int(grid.ce_leg.strike)}*:\n"
+            f"• LTP/Open: ₹{ce_ltp:.2f} | Delta: {grid.ce_leg.delta:.3f}\n"
+            f"• EPM Low: ₹{grid.ce_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.ce_leg.sl_auto:.2f}\n"
+            f"• EPM Upper Target: ₹{grid.ce_leg.target_epm:.2f} | Practical Target: ₹{grid.ce_leg.practical_target:.2f}\n\n"
+            f"🔴 *PE {int(grid.pe_leg.strike)}*:\n"
+            f"• LTP/Open: ₹{pe_ltp:.2f} | Delta: {-grid.pe_leg.delta:.3f}\n"
+            f"• EPM Low: ₹{grid.pe_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.pe_leg.sl_auto:.2f}\n"
+            f"• EPM Upper Target: ₹{grid.pe_leg.target_epm:.2f} | Practical Target: ₹{grid.pe_leg.practical_target:.2f}"
+        )
+        send_mobile_alert(msg)
 
-    # Log to Excel
-    excel_tracker.add_signal({
-        "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-        "spot": spot_price,
-        "vix": vix_val,
-        "ce_symbol": ce_contract.trading_symbol,
-        "ce_ltp": ce_ltp,
-        "ce_low": grid.ce_leg.epm_lower_range,
-        "ce_upper": grid.ce_leg.target_epm,
-        "pe_symbol": pe_contract.trading_symbol,
-        "pe_ltp": pe_ltp,
-        "pe_low": grid.pe_leg.epm_lower_range,
-        "pe_upper": grid.pe_leg.target_epm,
-    })
+        # Send Commands Cheat Sheet / Tips at 9:15 AM (Safe Markdown formatting)
+        cheat_sheet_msg = (
+            "📱 *SENSEX BOT COMMANDS CHEAT SHEET*\n\n"
+            "Use these keywords during an active trade to manage your position on the go:\n\n"
+            "1. *Add Lots:* `ADD LOTS`\n"
+            "   Example: `ADD 2` (Adds 2 more lots at Market price, initial SL remains same)\n\n"
+            "2. *Set Trailing Buffer:* `BUFFER POINTS`\n"
+            "   Example: `BUFFER 10` (Sets trailing stop-loss distance to 10 points)\n\n"
+            "3. *Modify Stop-Loss:* `SL PRICE`\n"
+            "   Example: `SL 450` (Manually sets Stop Loss to ₹450)\n\n"
+            "4. *Safety Stops:* `STOP` / `HALT` / `EXIT` / `CLOSE`\n"
+            "   (Exits all active positions immediately at Market price and halts bot)\n\n"
+            "💡 *Smart Scaling (Auto-Activated):*\n"
+            "• *Surge Target (3x Risk):* Sells major portion, moves remaining runner lot SL to Cost Price.\n"
+            "• *Practical Target:* Sells major portion, moves remaining runner lot SL to Peak - 20 (wider trailing room)."
+        )
+        send_mobile_alert(cheat_sheet_msg)
+
+        # Log to Excel
+        excel_tracker.add_signal({
+            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+            "spot": spot_price,
+            "vix": vix_val,
+            "ce_symbol": ce_contract.trading_symbol,
+            "ce_ltp": ce_ltp,
+            "ce_low": grid.ce_leg.epm_lower_range,
+            "ce_upper": grid.ce_leg.target_epm,
+            "pe_symbol": pe_contract.trading_symbol,
+            "pe_ltp": pe_ltp,
+            "pe_low": grid.pe_leg.epm_lower_range,
+            "pe_upper": grid.pe_leg.target_epm,
+        })
 
     # Initialize and start background WebSocket feed for zero-lag live feed
     ws_feed = None
@@ -867,6 +1167,13 @@ def run_cloud_bot() -> None:
                 checked_at = datetime.now(IST)
                 loop_counter += 1
 
+                # Graceful Market Close Exit at 3:30 PM IST (15:30 IST)
+                if (checked_at.hour == 15 and checked_at.minute >= 30) or (checked_at.hour > 15):
+                    sys.stdout.write("\n")
+                    logger.info("🕒 [MARKET CLOSE] Current time is after 3:30 PM IST. Shutting down bot gracefully...")
+                    send_mobile_alert("🕒 *MARKET CLOSE REACHED*\nCurrent time is after 3:30 PM IST. Shutting down bot gracefully.")
+                    break
+
                 # Check Telegram for remote commands ('LIVE [LOTS]', 'DEMO', 'STOP', 'ADD', 'BUFFER', 'SL')
                 cmd, remote_lots = tg_listener.get_new_command()
                 if cmd == "STOP":
@@ -912,9 +1219,9 @@ def run_cloud_bot() -> None:
                 if live_spot is None:
                     try:
                         live_spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
-                        live_spot = float(live_spot_res["data"]["ltp"]) if isinstance(live_spot_res, dict) and live_spot_res.get("data") else spot_price
+                        live_spot = float(live_spot_res["data"]["ltp"]) if isinstance(live_spot_res, dict) and live_spot_res.get("data") else None
                     except Exception:
-                        live_spot = spot_price
+                        live_spot = None
 
                 live_ce_ltp = None
                 if ws_feed and ws_feed.is_connected:
@@ -922,9 +1229,9 @@ def run_cloud_bot() -> None:
                 if live_ce_ltp is None:
                     try:
                         live_ce_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
-                        live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else ce_ltp
+                        live_ce_ltp = float(live_ce_res["data"]["ltp"]) if isinstance(live_ce_res, dict) and live_ce_res.get("data") else None
                     except Exception:
-                        live_ce_ltp = ce_ltp
+                        live_ce_ltp = None
 
                 live_pe_ltp = None
                 if ws_feed and ws_feed.is_connected:
@@ -932,9 +1239,13 @@ def run_cloud_bot() -> None:
                 if live_pe_ltp is None:
                     try:
                         live_pe_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
-                        live_pe_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else pe_ltp
+                        live_pe_ltp = float(live_pe_res["data"]["ltp"]) if isinstance(live_pe_res, dict) and live_pe_res.get("data") else None
                     except Exception:
-                        live_pe_ltp = pe_ltp
+                        live_pe_ltp = None
+
+                if live_spot is None or live_ce_ltp is None or live_pe_ltp is None:
+                    logger.warning("⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.")
+                    continue
 
                 # 1. Update Recent Lows while IDLE
                 if bot_state == "IDLE":
@@ -964,6 +1275,7 @@ def run_cloud_bot() -> None:
                         bot_state = "IDLE"
                         active_contract = None
                         trades_completed += 1
+                        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
                         # Reset recent low tracking
                         recent_ce_low = live_ce_ltp
                         recent_pe_low = live_pe_ltp
@@ -973,37 +1285,63 @@ def run_cloud_bot() -> None:
                     if trades_completed >= max_trades_per_day:
                         pass
                     else:
+                        now_time = datetime.now(IST).time()
+                        
                         # --- CE ENTRY SIGNAL EVALUATION ---
                         ce_low_level = grid.ce_leg.epm_lower_range
-                        
-                        # Case 1: At or near EPM Low (+/- 2 points) and bouncing up (rising tick) - NO NEED TO WAIT FOR OPEN
-                        is_at_or_near_low_ce = (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp > previous_ce_ltp)
-                        
-                        # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
-                        is_broken_low_bounce_ce = False
-                        ce_candle_low_sl = ce_low_level - 15.0  # Safe fallback
-                        
-                        if (ce_low_level - 20 <= live_ce_ltp < ce_low_level) and (live_spot >= spot_open):
-                            c_open, c_low = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
-                            if c_open is not None and c_low is not None:
-                                if live_ce_ltp >= c_open:
-                                    is_broken_low_bounce_ce = True
-                                    ce_candle_low_sl = c_low
-
-                        # Determine if we have a valid CE Entry
                         ce_entry_signal = False
                         active_sl_ce = grid.ce_leg.sl_auto
                         entry_type_str_ce = ""
                         
-                        if is_at_or_near_low_ce:
-                            ce_entry_signal = True
-                            active_sl_ce = grid.ce_leg.sl_auto
-                            entry_type_str_ce = "At/Near EPM Low Bounce"
-                        elif is_broken_low_bounce_ce:
-                            ce_entry_signal = True
-                            # SL is Candle Low minus 3 points
-                            active_sl_ce = max(1.0, ce_candle_low_sl - 3.0)
-                            entry_type_str_ce = "EPM Break & 15m Candle Open Bounce"
+                        if current_slot == "09:15":
+                            # 9:15 Slot entry logic: Active during 9:15 AM to 9:30 AM
+                            if (now_time.hour == 9 and 15 <= now_time.minute < 30):
+                                has_corrected_ce = (ce_low_level - 35.0 <= recent_ce_low < ce_low_level)
+                                if has_corrected_ce:
+                                    candles_5m = get_current_5m_candles(smart_api, "BFO", ce_contract.symbol_token)
+                                    if len(candles_5m) >= 2:
+                                        last_candle = candles_5m[-1]
+                                        prev_candle = candles_5m[-2]
+                                        
+                                        c_open_5m = float(last_candle[1])
+                                        c_low_5m = float(last_candle[3])
+                                        c_vol_5m = float(last_candle[5])
+                                        prev_vol_5m = float(prev_candle[5])
+                                        
+                                        is_reversing_to_open = (live_ce_ltp >= c_open_5m)
+                                        is_open_equals_low = (abs(c_open_5m - c_low_5m) <= 0.5)
+                                        
+                                        # Heavy volume/buying pressure check: volume >= 95% of previous completed 5m candle, OR a strong 12-point bounce
+                                        is_heavy_volume = (c_vol_5m >= prev_vol_5m * 0.95) or (live_ce_ltp >= recent_ce_low + 12.0)
+                                        
+                                        if (is_reversing_to_open or is_open_equals_low) and is_heavy_volume:
+                                            ce_entry_signal = True
+                                            active_sl_ce = ce_low_level - 15.0  # Maintain standard SL 15 points
+                                            entry_type_str_ce = "9:15 Slot 5m Reversal to Open/Open=Low with Volume"
+                        else:
+                            # 9:45 and 12:15 slot entry logic: No change in buffer from EPM low, use 15m candle bounce
+                            # Case 1: Near EPM Low (+/- 2 points) AND has bottomed/reversed by at least 5 points (prevents buying a falling knife)
+                            is_at_or_near_low_ce = (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp >= recent_ce_low + 5.0)
+                            
+                            # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
+                            is_broken_low_bounce_ce = False
+                            ce_candle_low_sl = ce_low_level - 15.0
+                            
+                            if (ce_low_level - 20.0 <= live_ce_ltp < ce_low_level) and (live_spot >= spot_open):
+                                c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
+                                if c_open_15m is not None and c_low_15m is not None:
+                                    if live_ce_ltp >= c_open_15m:
+                                        is_broken_low_bounce_ce = True
+                                        ce_candle_low_sl = c_low_15m
+                                        
+                            if is_at_or_near_low_ce:
+                                ce_entry_signal = True
+                                active_sl_ce = grid.ce_leg.sl_auto
+                                entry_type_str_ce = "At/Near EPM Low Bounce (+5pt Reversal)"
+                            elif is_broken_low_bounce_ce:
+                                ce_entry_signal = True
+                                active_sl_ce = max(1.0, ce_candle_low_sl - 3.0)
+                                entry_type_str_ce = "EPM Break & 15m Candle Open Bounce"
 
                         # Trigger CE Long Entry
                         if ce_entry_signal:
@@ -1014,7 +1352,7 @@ def run_cloud_bot() -> None:
                             active_sl = active_sl_ce
                             entry_time = datetime.now(IST)
                             qty_to_trade = lot_size * 20
-                            original_sl_distance = max(1.0, active_entry_price - active_sl)
+                            original_sl_distance = max(15.0, active_entry_price - active_sl)  # Enforce min 15pt risk distance
                             trailing_active = False
                             peak_price = active_entry_price
                             offloaded = False
@@ -1040,39 +1378,65 @@ def run_cloud_bot() -> None:
                                 "qty": qty_to_trade,
                                 "trades_count": trades_completed + 1
                             })
+                            # Save state immediately to memory
+                            save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
 
                         # --- PE ENTRY SIGNAL EVALUATION ---
                         else:
                             pe_low_level = grid.pe_leg.epm_lower_range
-                            
-                            # Case 1: At or near EPM Low (+/- 2 points) and bouncing up (rising tick) - NO NEED TO WAIT FOR OPEN
-                            is_at_or_near_low_pe = (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp > previous_pe_ltp)
-                            
-                            # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
-                            is_broken_low_bounce_pe = False
-                            pe_candle_low_sl = pe_low_level - 15.0  # Safe fallback
-                            
-                            if (pe_low_level - 20 <= live_pe_ltp < pe_low_level) and (live_spot < spot_open):
-                                c_open, c_low = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
-                                if c_open is not None and c_low is not None:
-                                    if live_pe_ltp >= c_open:
-                                        is_broken_low_bounce_pe = True
-                                        pe_candle_low_sl = c_low
-
-                            # Determine if we have a valid PE Entry
                             pe_entry_signal = False
                             active_sl_pe = grid.pe_leg.sl_auto
                             entry_type_str_pe = ""
                             
-                            if is_at_or_near_low_pe:
-                                pe_entry_signal = True
-                                active_sl_pe = grid.pe_leg.sl_auto
-                                entry_type_str_pe = "At/Near EPM Low Bounce"
-                            elif is_broken_low_bounce_pe:
-                                pe_entry_signal = True
-                                # SL is Candle Low minus 3 points
-                                active_sl_pe = max(1.0, pe_candle_low_sl - 3.0)
-                                entry_type_str_pe = "EPM Break & 15m Candle Open Bounce"
+                            if current_slot == "09:15":
+                                # 9:15 Slot entry logic: Active during 9:15 AM to 9:30 AM
+                                if (now_time.hour == 9 and 15 <= now_time.minute < 30):
+                                    has_corrected_pe = (pe_low_level - 35.0 <= recent_pe_low < pe_low_level)
+                                    if has_corrected_pe:
+                                        candles_5m = get_current_5m_candles(smart_api, "BFO", pe_contract.symbol_token)
+                                        if len(candles_5m) >= 2:
+                                            last_candle = candles_5m[-1]
+                                            prev_candle = candles_5m[-2]
+                                            
+                                            c_open_5m = float(last_candle[1])
+                                            c_low_5m = float(last_candle[3])
+                                            c_vol_5m = float(last_candle[5])
+                                            prev_vol_5m = float(prev_candle[5])
+                                            
+                                            is_reversing_to_open = (live_pe_ltp >= c_open_5m)
+                                            is_open_equals_low = (abs(c_open_5m - c_low_5m) <= 0.5)
+                                            
+                                            # Heavy volume/buying pressure check: volume >= 95% of previous completed 5m candle, OR a strong 12-point bounce
+                                            is_heavy_volume = (c_vol_5m >= prev_vol_5m * 0.95) or (live_pe_ltp >= recent_pe_low + 12.0)
+                                            
+                                            if (is_reversing_to_open or is_open_equals_low) and is_heavy_volume:
+                                                pe_entry_signal = True
+                                                active_sl_pe = pe_low_level - 15.0  # Maintain standard SL 15 points
+                                                entry_type_str_pe = "9:15 Slot 5m Reversal to Open/Open=Low with Volume"
+                            else:
+                                # 9:45 and 12:15 slot entry logic: No change in buffer from EPM low, use 15m candle bounce
+                                # Case 1: Near EPM Low (+/- 2 points) AND has bottomed/reversed by at least 5 points (prevents buying a falling knife)
+                                is_at_or_near_low_pe = (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp >= recent_pe_low + 5.0)
+                                
+                                # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
+                                is_broken_low_bounce_pe = False
+                                pe_candle_low_sl = pe_low_level - 15.0
+                                
+                                if (pe_low_level - 20.0 <= live_pe_ltp < pe_low_level) and (live_spot < spot_open):
+                                    c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
+                                    if c_open_15m is not None and c_low_15m is not None:
+                                        if live_pe_ltp >= c_open_15m:
+                                            is_broken_low_bounce_pe = True
+                                            pe_candle_low_sl = c_low_15m
+                                            
+                                if is_at_or_near_low_pe:
+                                    pe_entry_signal = True
+                                    active_sl_pe = grid.pe_leg.sl_auto
+                                    entry_type_str_pe = "At/Near EPM Low Bounce (+5pt Reversal)"
+                                elif is_broken_low_bounce_pe:
+                                    pe_entry_signal = True
+                                    active_sl_pe = max(1.0, pe_candle_low_sl - 3.0)
+                                    entry_type_str_pe = "EPM Break & 15m Candle Open Bounce"
 
                             # Trigger PE Long Entry
                             if pe_entry_signal:
@@ -1083,7 +1447,7 @@ def run_cloud_bot() -> None:
                                 active_sl = active_sl_pe
                                 entry_time = datetime.now(IST)
                                 qty_to_trade = lot_size * 20
-                                original_sl_distance = max(1.0, active_entry_price - active_sl)
+                                original_sl_distance = max(15.0, active_entry_price - active_sl)  # Enforce min 15pt risk distance
                                 trailing_active = False
                                 peak_price = active_entry_price
                                 offloaded = False
@@ -1109,6 +1473,8 @@ def run_cloud_bot() -> None:
                                     "qty": qty_to_trade,
                                     "trades_count": trades_completed + 1
                                 })
+                                # Save state immediately to memory
+                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
 
                 elif bot_state == "CE_LONG":
                     # --- CE EXIT EVALUATION ---
@@ -1196,6 +1562,7 @@ def run_cloud_bot() -> None:
                         bot_state = "IDLE"
                         active_contract = None
                         trades_completed += 1
+                        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
                         trailing_active = False
                         peak_price = 0.0
                         recent_ce_low = live_ce_ltp
@@ -1226,6 +1593,7 @@ def run_cloud_bot() -> None:
                         bot_state = "IDLE"
                         active_contract = None
                         trades_completed += 1
+                        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
                         trailing_active = False
                         peak_price = 0.0
                         recent_ce_low = live_ce_ltp
@@ -1317,6 +1685,7 @@ def run_cloud_bot() -> None:
                         bot_state = "IDLE"
                         active_contract = None
                         trades_completed += 1
+                        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
                         trailing_active = False
                         peak_price = 0.0
                         recent_ce_low = live_ce_ltp
@@ -1347,6 +1716,7 @@ def run_cloud_bot() -> None:
                         bot_state = "IDLE"
                         active_contract = None
                         trades_completed += 1
+                        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
                         trailing_active = False
                         peak_price = 0.0
                         recent_ce_low = live_ce_ltp
