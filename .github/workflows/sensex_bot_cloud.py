@@ -48,7 +48,15 @@ if sys.stderr.encoding != 'utf-8':
     except Exception:
         pass
 
-# Logging setup
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def ist_converter(*args):
+    return datetime.now(IST).timetuple()
+
+# Logging setup with IST converter to ensure running updates printing time is strictly in Indian Time (IST)
+import logging
+logging.Formatter.converter = ist_converter
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -68,8 +76,6 @@ if os.name == "nt":
         kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
     except Exception:
         pass
-
-IST = timezone(timedelta(hours=5, minutes=30))
 
 
 # =========================================================================
@@ -167,6 +173,8 @@ class EPMMasterGrid:
     upper_index: float
     ce_leg: MasterGridLeg
     pe_leg: MasterGridLeg
+    ce_legs: list[MasterGridLeg] = None
+    pe_legs: list[MasterGridLeg] = None
 
 
 def calculate_master_grid_leg(
@@ -208,7 +216,9 @@ def calculate_master_grid(
     spot: float, vix: float, dte: float,
     ce_ltp: float, ce_delta: float, ce_strike: float,
     pe_ltp: float, pe_delta: float, pe_strike: float,
-    buffer: float = 0.15,
+    buffer: float = 0.12,
+    ce_legs_data: list[tuple[float, float, float]] | None = None,
+    pe_legs_data: list[tuple[float, float, float]] | None = None,
 ) -> EPMMasterGrid:
     spot_val = float(spot)
     vix_val = float(vix) if float(vix) > 0 else 13.5
@@ -223,11 +233,26 @@ def calculate_master_grid(
     ce_leg = calculate_master_grid_leg("CE", ce_strike, ce_ltp, ce_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer)
     pe_leg = calculate_master_grid_leg("PE", pe_strike, pe_ltp, pe_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer)
 
+    ce_legs = []
+    if ce_legs_data:
+        for c_ltp, c_delta, c_strike in ce_legs_data:
+            ce_legs.append(calculate_master_grid_leg("CE", c_strike, c_ltp, c_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer))
+    else:
+        ce_legs = [ce_leg]
+
+    pe_legs = []
+    if pe_legs_data:
+        for p_ltp, p_delta, p_strike in pe_legs_data:
+            pe_legs.append(calculate_master_grid_leg("PE", p_strike, p_ltp, p_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer))
+    else:
+        pe_legs = [pe_leg]
+
     return EPMMasterGrid(
         spot=spot_val, vix=vix_val, dte=dte_val, dte_sqrt=time_factor,
         index_move=index_move, noise_10=noise_10,
         lower_index=lower_index, upper_index=upper_index,
         ce_leg=ce_leg, pe_leg=pe_leg,
+        ce_legs=ce_legs, pe_legs=pe_legs,
     )
 
 
@@ -440,11 +465,12 @@ class OptionContract:
     delta: float
 
 
-def select_nearest_itm_contract(
+def select_itm_contracts(
     contracts: Iterable[OptionContract],
     spot_price: float,
     option_type: str,
-) -> OptionContract:
+    count: int = 3,
+) -> list[OptionContract]:
     spot = float(spot_price)
     matching = [c for c in contracts if c.option_type == option_type]
     if not matching:
@@ -464,12 +490,35 @@ def select_nearest_itm_contract(
         earliest_expiry = min(exp_dt_date for _, exp_dt_date in contracts_with_expiry)
         matching = [c for c, exp_dt_date in contracts_with_expiry if exp_dt_date == earliest_expiry]
 
+    # Deduplicate contracts by unique strike so we pick 3 distinct strike levels
+    by_strike: dict[float, OptionContract] = {}
+    for c in matching:
+        if c.strike not in by_strike:
+            by_strike[c.strike] = c
+
+    unique_contracts = list(by_strike.values())
+
     if option_type == "CE":
-        itm = [c for c in matching if c.strike < spot]
-        return max(itm if itm else matching, key=lambda c: c.strike)
+        itm = sorted([c for c in unique_contracts if c.strike <= spot], key=lambda c: c.strike, reverse=True)
+        if len(itm) < count:
+            all_sorted = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
+            return all_sorted[:count]
+        return itm[:count]
     else:
-        itm = [c for c in matching if c.strike > spot]
-        return min(itm if itm else matching, key=lambda c: c.strike)
+        itm = sorted([c for c in unique_contracts if c.strike >= spot], key=lambda c: c.strike)
+        if len(itm) < count:
+            all_sorted = sorted(unique_contracts, key=lambda c: c.strike)
+            return all_sorted[:count]
+        return itm[:count]
+
+
+def select_nearest_itm_contract(
+    contracts: Iterable[OptionContract],
+    spot_price: float,
+    option_type: str,
+) -> OptionContract:
+    res = select_itm_contracts(contracts, spot_price, option_type, count=1)
+    return res[0]
 
 
 def create_authenticated_smartapi_client() -> Any:
@@ -684,7 +733,31 @@ def save_bot_memory_full(trades_completed: int, grid_time_slot: str, grid: EPMMa
                     "sl_auto": grid.pe_leg.sl_auto,
                     "practical_target": grid.pe_leg.practical_target,
                     "option_type": grid.pe_leg.option_type
-                }
+                },
+                "ce_legs": [
+                    {
+                        "strike": leg.strike,
+                        "ltp": leg.ltp,
+                        "delta": leg.delta,
+                        "target_epm": leg.target_epm,
+                        "epm_lower_range": leg.epm_lower_range,
+                        "sl_auto": leg.sl_auto,
+                        "practical_target": leg.practical_target,
+                        "option_type": leg.option_type
+                    } for leg in (grid.ce_legs or [grid.ce_leg])
+                ],
+                "pe_legs": [
+                    {
+                        "strike": leg.strike,
+                        "ltp": leg.ltp,
+                        "delta": leg.delta,
+                        "target_epm": leg.target_epm,
+                        "epm_lower_range": leg.epm_lower_range,
+                        "sl_auto": leg.sl_auto,
+                        "practical_target": leg.practical_target,
+                        "option_type": leg.option_type
+                    } for leg in (grid.pe_legs or [grid.pe_leg])
+                ]
             },
             "ce_contract": {
                 "exchange": ce_contract.exchange,
@@ -714,6 +787,138 @@ def save_bot_memory_full(trades_completed: int, grid_time_slot: str, grid: EPMMa
 
 def save_bot_memory(trades_completed: int, grid_time_slot: str, grid: EPMMasterGrid, ce_contract: OptionContract, pe_contract: OptionContract) -> None:
     save_bot_memory_full(trades_completed, grid_time_slot, grid, ce_contract, pe_contract, "IDLE", None, 0.0, 0.0, 0.0, 0.0, False, False, 1, None)
+
+
+def get_current_1m_candles(smart_api: Any, exchange: str, symbol_token: str, count_mins: int = 15) -> list:
+    """Fetch recent 1-minute candles from SmartAPI.
+    Each candle is: [timestamp, open, high, low, close, volume]
+    """
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(minutes=count_mins)
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "ONE_MINUTE",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            return res["data"]
+    except Exception as e:
+        logger.debug("Error fetching 1m candles: %s", e)
+    return []
+
+
+def build_epm_grid_and_contracts(
+    smart_api: Any,
+    current_slot: str,
+    spot_price: float,
+    spot_open: float,
+    vix_val: float,
+) -> tuple[EPMMasterGrid, list[OptionContract], list[OptionContract]]:
+    """Fetch option contracts, select top 3 ITM strikes for CE and PE, calculate EPM grid for all of them."""
+    search_res = smart_api.searchScrip("BFO", "SENSEX")
+    rows = search_res.get("data", []) if isinstance(search_res, dict) else []
+
+    contracts: list[OptionContract] = []
+    for r in rows:
+        symbol = str(r.get("tradingsymbol") or "").strip()
+        if not symbol or not (symbol.endswith("CE") or symbol.endswith("PE")):
+            continue
+        opt_type = "CE" if symbol.endswith("CE") else "PE"
+        token = str(r.get("symboltoken") or "").strip()
+
+        m_strike = re.search(r"(\d+)(?:CE|PE)$", symbol)
+        if not m_strike:
+            continue
+        num_str = m_strike.group(1)
+        strike_val = float(num_str[-5:]) if len(num_str) >= 5 else float(num_str)
+
+        raw_exp = str(r.get("expiry") or "").strip()
+        if raw_exp:
+            expiry_val = raw_exp
+        else:
+            m1 = re.search(r"SENSEX(\d{2})([A-Za-z]{3})(\d+)(?:CE|PE)$", symbol)
+            m2 = re.search(r"SENSEX(\d{2})([1-9ONDond])(\d{2})(\d{5})(?:CE|PE)$", symbol)
+            if m1:
+                yy, mmm, _ = m1.groups()
+                expiry_val = f"20{yy}-{mmm.upper()}-01"
+            elif m2:
+                yy, m_code, dd, _ = m2.groups()
+                month_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "O": 10, "N": 11, "D": 12}
+                m_num = month_map.get(m_code.upper(), 8)
+                expiry_val = f"20{yy}-{m_num:02d}-{dd}"
+            else:
+                expiry_val = "2026-08-24"
+
+        dte_days, _ = calculate_dte_sqrt(expiry_val)
+        delta_val = calculate_bsm_delta(spot_price, strike_val, dte_days, vix_val, opt_type)
+
+        try:
+            c_obj = OptionContract("BFO", symbol, token, expiry_val, strike_val, opt_type, delta_val)
+            contracts.append(c_obj)
+        except Exception:
+            continue
+
+    ce_contracts = select_itm_contracts(contracts, spot_price, "CE", count=3)
+    pe_contracts = select_itm_contracts(contracts, spot_price, "PE", count=3)
+
+    ce_legs_data = []
+    for c in ce_contracts:
+        res = smart_api.ltpData("BFO", c.trading_symbol, c.symbol_token)
+        ltp = float(res["data"]["ltp"]) if isinstance(res, dict) and res.get("data") else 500.0
+        c_open = float(res["data"]["open"]) if isinstance(res, dict) and res.get("data") and res["data"].get("open") else ltp
+        price_to_use = c_open if current_slot == "09:15" else ltp
+        ce_legs_data.append((price_to_use, abs(c.delta), c.strike))
+
+    pe_legs_data = []
+    for p in pe_contracts:
+        res = smart_api.ltpData("BFO", p.trading_symbol, p.symbol_token)
+        ltp = float(res["data"]["ltp"]) if isinstance(res, dict) and res.get("data") else 300.0
+        p_open = float(res["data"]["open"]) if isinstance(res, dict) and res.get("data") and res["data"].get("open") else ltp
+        price_to_use = p_open if current_slot == "09:15" else ltp
+        pe_legs_data.append((price_to_use, abs(p.delta), p.strike))
+
+    dte_days, _ = calculate_dte_sqrt(ce_contracts[0].expiry)
+    spot_to_use = spot_open if current_slot == "09:15" else spot_price
+
+    grid = calculate_master_grid(
+        spot=spot_to_use, vix=vix_val, dte=dte_days,
+        ce_ltp=ce_legs_data[0][0], ce_delta=ce_legs_data[0][1], ce_strike=ce_legs_data[0][2],
+        pe_ltp=pe_legs_data[0][0], pe_delta=pe_legs_data[0][1], pe_strike=pe_legs_data[0][2],
+        buffer=0.10,
+        ce_legs_data=ce_legs_data,
+        pe_legs_data=pe_legs_data
+    )
+
+    return grid, ce_contracts, pe_contracts
+
+
+def format_grid_notification(grid: EPMMasterGrid, title: str, spot_price: float, spot_open: float, vix_val: float, dte_days: float, current_slot: str = "09:15") -> str:
+    """Format clean Telegram and log notification containing all 2-3 ITM strikes."""
+    price_label = "9:15 AM Open Price" if current_slot == "09:15" else f"{current_slot} Slot Price"
+    lines = [
+        f"{title} (Slot: {current_slot} IST)\n",
+        f"📈 *Spot LTP*: ₹{spot_price:.2f} (Open: ₹{spot_open:.2f}) | *VIX*: {vix_val:.2f}%",
+        f"📅 *DTE*: {dte_days:.1f} Days | *Expected Move*: ±₹{grid.index_move:.2f}\n",
+        "🟢 *CE ITM STRIKES (STATIC EPM)*:"
+    ]
+    for idx, leg in enumerate(grid.ce_legs or [grid.ce_leg], 1):
+        lines.append(
+            f"• *CE {int(leg.strike)} (ITM {idx})*: {price_label} ₹{leg.ltp:.2f} | Delta {leg.delta:.3f}\n"
+            f"  └ EPM Low: ₹{leg.epm_lower_range:.2f} | Upper Target: ₹{leg.target_epm:.2f} | Auto SL: ₹{leg.sl_auto:.2f}"
+        )
+
+    lines.append("\n🔴 *PE ITM STRIKES (STATIC EPM)*:")
+    for idx, leg in enumerate(grid.pe_legs or [grid.pe_leg], 1):
+        lines.append(
+            f"• *PE {int(leg.strike)} (ITM {idx})*: {price_label} ₹{leg.ltp:.2f} | Delta {-leg.delta:.3f}\n"
+            f"  └ EPM Low: ₹{leg.epm_lower_range:.2f} | Upper Target: ₹{leg.target_epm:.2f} | Auto SL: ₹{leg.sl_auto:.2f}"
+        )
+
+    return "\n".join(lines)
 
 
 def get_current_5m_candles(smart_api: Any, exchange: str, symbol_token: str) -> list:
@@ -905,7 +1110,44 @@ def run_cloud_bot() -> None:
                     sl_auto=pe_leg_data["sl_auto"],
                     practical_target=pe_leg_data["practical_target"]
                 )
-                
+
+                ce_legs = []
+                if "ce_legs" in grid_data and isinstance(grid_data["ce_legs"], list):
+                    for l_data in grid_data["ce_legs"]:
+                        ce_legs.append(MasterGridLeg(
+                            option_type=l_data.get("option_type", "CE"),
+                            strike=l_data["strike"],
+                            ltp=l_data["ltp"],
+                            delta=l_data["delta"],
+                            target_epm=l_data["target_epm"],
+                            epm_lower_range=l_data["epm_lower_range"],
+                            sl_auto=l_data["sl_auto"],
+                            practical_target=l_data["practical_target"]
+                        ))
+                else:
+                    ce_legs = [ce_leg]
+
+                pe_legs = []
+                if "pe_legs" in grid_data and isinstance(grid_data["pe_legs"], list):
+                    for l_data in grid_data["pe_legs"]:
+                        pe_legs.append(MasterGridLeg(
+                            option_type=l_data.get("option_type", "PE"),
+                            strike=l_data["strike"],
+                            ltp=l_data["ltp"],
+                            delta=l_data["delta"],
+                            target_epm=l_data["target_epm"],
+                            epm_lower_range=l_data["epm_lower_range"],
+                            sl_auto=l_data["sl_auto"],
+                            practical_target=l_data["practical_target"]
+                        ))
+                else:
+                    pe_legs = [pe_leg]
+
+                unique_ce = set(l.strike for l in ce_legs)
+                unique_pe = set(l.strike for l in pe_legs)
+                if len(unique_ce) < 3 or len(unique_pe) < 3:
+                    raise ValueError("Legacy or non-unique strike memory format found. Triggering fresh 3-ITM strike grid calculation.")
+
                 grid = EPMMasterGrid(
                     spot=grid_data["spot"],
                     vix=grid_data["vix"],
@@ -916,7 +1158,9 @@ def run_cloud_bot() -> None:
                     lower_index=grid_data["spot"] - grid_data["index_move"],
                     upper_index=grid_data["spot"] + grid_data["index_move"],
                     ce_leg=ce_leg,
-                    pe_leg=pe_leg
+                    pe_leg=pe_leg,
+                    ce_legs=ce_legs,
+                    pe_legs=pe_legs
                 )
                 
                 spot_price = grid.spot
@@ -954,130 +1198,43 @@ def run_cloud_bot() -> None:
                 grid_from_memory = False
 
     if grid is None:
-        logger.info("🆕 [MASTER GRID] Calculating a new Master Grid for slot %s...", current_slot)
-        # Search contracts
-        search_res = smart_api.searchScrip("BFO", "SENSEX")
-        rows = search_res.get("data", []) if isinstance(search_res, dict) else []
-
-        contracts: list[OptionContract] = []
-        for r in rows:
-            symbol = str(r.get("tradingsymbol") or "").strip()
-            if not symbol or not (symbol.endswith("CE") or symbol.endswith("PE")):
-                continue
-            opt_type = "CE" if symbol.endswith("CE") else "PE"
-            token = str(r.get("symboltoken") or "").strip()
-
-            m_strike = re.search(r"(\d+)(?:CE|PE)$", symbol)
-            if not m_strike:
-                continue
-            num_str = m_strike.group(1)
-            strike_val = float(num_str[-5:]) if len(num_str) >= 5 else float(num_str)
-
-            raw_exp = str(r.get("expiry") or "").strip()
-            if raw_exp:
-                expiry_val = raw_exp
-            else:
-                m1 = re.search(r"SENSEX(\d{2})([A-Za-z]{3})(\d+)(?:CE|PE)$", symbol)
-                m2 = re.search(r"SENSEX(\d{2})([1-9ONDond])(\d{2})(\d{5})(?:CE|PE)$", symbol)
-                if m1:
-                    yy, mmm, _ = m1.groups()
-                    expiry_val = f"20{yy}-{mmm.upper()}-01"
-                elif m2:
-                    yy, m_code, dd, _ = m2.groups()
-                    month_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "O": 10, "N": 11, "D": 12}
-                    m_num = month_map.get(m_code.upper(), 8)
-                    expiry_val = f"20{yy}-{m_num:02d}-{dd}"
-                else:
-                    expiry_val = "2026-08-24"
-
-            dte_days, _ = calculate_dte_sqrt(expiry_val)
-            delta_val = calculate_bsm_delta(spot_price, strike_val, dte_days, vix_val, opt_type)
-
-            try:
-                c_obj = OptionContract("BFO", symbol, token, expiry_val, strike_val, opt_type, delta_val)
-                contracts.append(c_obj)
-            except Exception:
-                continue
-
-        ce_contract = select_nearest_itm_contract(contracts, spot_price, "CE")
-        pe_contract = select_nearest_itm_contract(contracts, spot_price, "PE")
-
-        ce_ltp_res = smart_api.ltpData("BFO", ce_contract.trading_symbol, ce_contract.symbol_token)
-        pe_ltp_res = smart_api.ltpData("BFO", pe_contract.trading_symbol, pe_contract.symbol_token)
-
-        ce_ltp = float(ce_ltp_res["data"]["ltp"]) if isinstance(ce_ltp_res, dict) and ce_ltp_res.get("data") else 500.0
-        pe_ltp = float(pe_ltp_res["data"]["ltp"]) if isinstance(pe_ltp_res, dict) and pe_ltp_res.get("data") else 300.0
-
-        ce_open = float(ce_ltp_res["data"]["open"]) if isinstance(ce_ltp_res, dict) and ce_ltp_res.get("data") and ce_ltp_res["data"].get("open") else ce_ltp
-        pe_open = float(pe_ltp_res["data"]["open"]) if isinstance(pe_ltp_res, dict) and pe_ltp_res.get("data") and pe_ltp_res["data"].get("open") else pe_ltp
-
-        dte_days, _ = calculate_dte_sqrt(ce_contract.expiry)
-
-        if current_slot == "09:15":
-            grid = calculate_master_grid(
-                spot=spot_open, vix=vix_val, dte=dte_days,
-                ce_ltp=ce_open, ce_delta=abs(ce_contract.delta), ce_strike=ce_contract.strike,
-                pe_ltp=pe_open, pe_delta=abs(pe_contract.delta), pe_strike=pe_contract.strike,
-                buffer=0.15
-            )
-            # Re-align ltp variables with Open prices for EPM print & notifications
-            ce_ltp = ce_open
-            pe_ltp = pe_open
-            spot_price = spot_open
-        else:
-            grid = calculate_master_grid(
-                spot=spot_price, vix=vix_val, dte=dte_days,
-                ce_ltp=ce_ltp, ce_delta=abs(ce_contract.delta), ce_strike=ce_contract.strike,
-                pe_ltp=pe_ltp, pe_delta=abs(pe_contract.delta), pe_strike=pe_contract.strike,
-                buffer=0.15
-            )
-        # Save EPM to memory
+        logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot %s...", current_slot)
+        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val)
+        ce_contract = ce_contracts[0]
+        pe_contract = pe_contracts[0]
+        ce_ltp = grid.ce_leg.ltp
+        pe_ltp = grid.pe_leg.ltp
+        dte_days = grid.dte
         save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
 
     if grid_from_memory:
         logger.info("=========================================================================")
         logger.info("SENSEX CLOUD BOT - RECALLED MASTER GRID FROM MEMORY")
         logger.info("Spot: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
-        logger.info("CE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                    grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
-        logger.info("PE Strike %d: LTP ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                    grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
+        for idx, leg in enumerate(grid.ce_legs or [grid.ce_leg], 1):
+            logger.info("CE Strike %d (ITM %d): LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                        leg.strike, idx, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+        for idx, leg in enumerate(grid.pe_legs or [grid.pe_leg], 1):
+            logger.info("PE Strike %d (ITM %d): LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                        leg.strike, idx, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
         logger.info("=========================================================================")
         
-        flash_msg = (
-            f"🔄 *RECALLED MASTER GRID FROM MEMORY*\n\n"
-            f"🟢 *CE {int(grid.ce_leg.strike)}*:\n"
-            f"• LTP/Open: ₹{ce_ltp:.2f} | EPM Low: ₹{grid.ce_leg.epm_lower_range:.2f} | SL: ₹{grid.ce_leg.sl_auto:.2f}\n"
-            f"• Target: ₹{grid.ce_leg.target_epm:.2f} | Practical: ₹{grid.ce_leg.practical_target:.2f}\n\n"
-            f"🔴 *PE {int(grid.pe_leg.strike)}*:\n"
-            f"• LTP/Open: ₹{pe_ltp:.2f} | EPM Low: ₹{grid.pe_leg.epm_lower_range:.2f} | SL: ₹{grid.pe_leg.sl_auto:.2f}\n"
-            f"• Target: ₹{grid.pe_leg.target_epm:.2f} | Practical: ₹{grid.pe_leg.practical_target:.2f}"
-        )
+        flash_msg = format_grid_notification(grid, "🔄 *RECALLED MASTER GRID FROM MEMORY*", spot_price, spot_open, vix_val, dte_days, current_slot)
         send_mobile_alert(flash_msg)
     else:
         logger.info("=========================================================================")
-        logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED")
+        logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED (Slot: %s IST)", current_slot)
         logger.info("Spot LTP: %.2f (Open: %.2f) | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, spot_open, vix_val, dte_days, grid.index_move)
-        logger.info("CE Strike %d: LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                    grid.ce_leg.strike, ce_ltp, grid.ce_leg.delta, grid.ce_leg.epm_lower_range, grid.ce_leg.target_epm, grid.ce_leg.sl_auto, grid.ce_leg.practical_target)
-        logger.info("PE Strike %d: LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                    grid.pe_leg.strike, pe_ltp, grid.pe_leg.delta, grid.pe_leg.epm_lower_range, grid.pe_leg.target_epm, grid.pe_leg.sl_auto, grid.pe_leg.practical_target)
+        for idx, leg in enumerate(grid.ce_legs or [grid.ce_leg], 1):
+            logger.info("CE Strike %d (ITM %d): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                        leg.strike, idx, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+        for idx, leg in enumerate(grid.pe_legs or [grid.pe_leg], 1):
+            logger.info("PE Strike %d (ITM %d): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                        leg.strike, idx, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
         logger.info("=========================================================================")
 
         # Send Notification
-        msg = (
-            f"🔔 *SENSEX MASTER GRID INITIALIZED*\n\n"
-            f"📈 *Spot LTP*: ₹{spot_price:.2f} (Open: ₹{spot_open:.2f}) | *VIX*: {vix_val:.2f}%\n"
-            f"📅 *DTE*: {dte_days:.1f} Days\n\n"
-            f"🟢 *CE {int(grid.ce_leg.strike)}*:\n"
-            f"• LTP/Open: ₹{ce_ltp:.2f} | Delta: {grid.ce_leg.delta:.3f}\n"
-            f"• EPM Low: ₹{grid.ce_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.ce_leg.sl_auto:.2f}\n"
-            f"• EPM Upper Target: ₹{grid.ce_leg.target_epm:.2f} | Practical Target: ₹{grid.ce_leg.practical_target:.2f}\n\n"
-            f"🔴 *PE {int(grid.pe_leg.strike)}*:\n"
-            f"• LTP/Open: ₹{pe_ltp:.2f} | Delta: {-grid.pe_leg.delta:.3f}\n"
-            f"• EPM Low: ₹{grid.pe_leg.epm_lower_range:.2f} | Auto SL: ₹{grid.pe_leg.sl_auto:.2f}\n"
-            f"• EPM Upper Target: ₹{grid.pe_leg.target_epm:.2f} | Practical Target: ₹{grid.pe_leg.practical_target:.2f}"
-        )
+        msg = format_grid_notification(grid, "🔔 *SENSEX MASTER GRID INITIALIZED*", spot_price, spot_open, vix_val, dte_days, current_slot)
         send_mobile_alert(msg)
 
         # Send Commands Cheat Sheet / Tips at 9:15 AM (Safe Markdown formatting)
@@ -1122,7 +1279,8 @@ def run_cloud_bot() -> None:
             api_key=os.environ["ANGEL_ONE_API_KEY"],
             auth_token=smart_api.auth_token
         )
-        ws_feed.start(["99919000", ce_contract.symbol_token, pe_contract.symbol_token])
+        tokens_to_sub = ["99919000"] + [c.symbol_token for c in (ce_contracts if 'ce_contracts' in locals() else [ce_contract])] + [c.symbol_token for c in (pe_contracts if 'pe_contracts' in locals() else [pe_contract])]
+        ws_feed.start(tokens_to_sub)
         logger.info("⚡ Background WebSocket Feed initialized.")
     except Exception as e:
         logger.warning("Could not initialize WebSocket Feed, falling back to HTTP: %s", e)
@@ -1166,6 +1324,100 @@ def run_cloud_bot() -> None:
                 time.sleep(poll_interval)
                 checked_at = datetime.now(IST)
                 loop_counter += 1
+
+                # Check for slot transition (e.g. from 9:15 AM to 9:45 AM or 9:45 AM to 12:15 PM)
+                now_slot = get_current_time_slot()
+                if now_slot != current_slot:
+                    sys.stdout.write("\n")
+                    logger.info("⏰ [SLOT TRANSITION] Time slot changed from %s to %s", current_slot, now_slot)
+                    current_slot = now_slot
+
+                    # 1. Fetch current Spot & VIX again for the new grid
+                    try:
+                        spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
+                        spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else 77500.0
+                        spot_open = float(spot_res["data"]["open"]) if isinstance(spot_res, dict) and spot_res.get("data") and spot_res["data"].get("open") else spot_price
+                    except Exception:
+                        pass
+
+                    try:
+                        vix_res = smart_api.ltpData("NSE", "INDIA VIX", "99926017")
+                        vix_val = float(vix_res["data"]["ltp"]) if isinstance(vix_res, dict) and vix_res.get("data") else 13.5
+                    except Exception:
+                        pass
+
+                    # 2. Re-calculate new Master Grid & Contracts for the new slot
+                    logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for transitioned slot %s...", current_slot)
+                    grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val)
+                    ce_contract = ce_contracts[0]
+                    pe_contract = pe_contracts[0]
+                    ce_ltp = grid.ce_leg.ltp
+                    pe_ltp = grid.pe_leg.ltp
+                    dte_days = grid.dte
+
+                    # Save EPM to memory
+                    if bot_state in ("CE_LONG", "PE_LONG"):
+                        save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                    else:
+                        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
+
+                    # Send Telegram Notification for new slot's EPM
+                    logger.info("=========================================================================")
+                    logger.info("SENSEX CLOUD BOT - MASTER GRID TRANSITIONED")
+                    logger.info("Spot LTP: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
+                    for idx, leg in enumerate(grid.ce_legs or [grid.ce_leg], 1):
+                        logger.info("CE Strike %d (ITM %d): LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                                    leg.strike, idx, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+                    for idx, leg in enumerate(grid.pe_legs or [grid.pe_leg], 1):
+                        logger.info("PE Strike %d (ITM %d): LTP/Open ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                                    leg.strike, idx, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+                    logger.info("=========================================================================")
+
+                    msg = format_grid_notification(grid, f"🔔 *SENSEX MASTER GRID UPDATED ({current_slot} Slot)*", spot_price, spot_open, vix_val, dte_days)
+                    send_mobile_alert(msg)
+
+                    # Log to Excel
+                    excel_tracker.add_signal({
+                        "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                        "spot": spot_price,
+                        "vix": vix_val,
+                        "ce_symbol": ce_contract.trading_symbol,
+                        "ce_ltp": ce_ltp,
+                        "ce_low": grid.ce_leg.epm_lower_range,
+                        "ce_upper": grid.ce_leg.target_epm,
+                        "pe_symbol": pe_contract.trading_symbol,
+                        "pe_ltp": pe_ltp,
+                        "pe_low": grid.pe_leg.epm_lower_range,
+                        "pe_upper": grid.pe_leg.target_epm,
+                    })
+
+                    # Reset recent lows and previous LTP tracking for the new slot contracts (only if IDLE)
+                    if bot_state == "IDLE":
+                        recent_ce_low = ce_ltp
+                        recent_pe_low = pe_ltp
+                    previous_ce_ltp = ce_ltp
+                    previous_pe_ltp = pe_ltp
+
+                    # Update WebSocket Feed subscription for the new contracts
+                    if ws_feed:
+                        try:
+                            logger.info("🔌 Closing old WebSocket feed and restarting with new slot tokens...")
+                            if ws_feed.ws:
+                                ws_feed.ws.close()
+                        except Exception as e:
+                            logger.debug("Failed to close old WebSocket: %s", e)
+
+                        try:
+                            ws_feed = LiveWSFeed(
+                                client_code=os.environ["ANGEL_ONE_CLIENT_CODE"],
+                                feed_token=smart_api.feed_token,
+                                api_key=os.environ["ANGEL_ONE_API_KEY"],
+                                auth_token=smart_api.auth_token
+                            )
+                            ws_feed.start(["99919000", ce_contract.symbol_token, pe_contract.symbol_token])
+                            logger.info("⚡ Background WebSocket Feed re-initialized for slot %s.", current_slot)
+                        except Exception as e:
+                            logger.warning("Could not re-initialize WebSocket Feed: %s", e)
 
                 # Graceful Market Close Exit at 3:30 PM IST (15:30 IST)
                 if (checked_at.hour == 15 and checked_at.minute >= 30) or (checked_at.hour > 15):
