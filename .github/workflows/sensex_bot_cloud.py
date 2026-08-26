@@ -1547,8 +1547,8 @@ def run_cloud_bot() -> None:
                         
                         if current_slot == "09:15":
                             # 9:15 Slot entry logic: Active during 9:15 AM to 9:30 AM
-                            if (now_time.hour == 9 and 15 <= now_time.minute < 30):
-                                has_corrected_ce = (ce_low_level - 35.0 <= recent_ce_low < ce_low_level)
+                            if (now_time.hour == 9 and 15 <= now_time.minute < 44):
+                                has_corrected_ce = (ce_low_level - 15.0 <= recent_ce_low < ce_low_level)
                                 if has_corrected_ce:
                                     candles_5m = get_current_5m_candles(smart_api, "BFO", ce_contract.symbol_token)
                                     if len(candles_5m) >= 2:
@@ -1564,7 +1564,7 @@ def run_cloud_bot() -> None:
                                         is_open_equals_low = (abs(c_open_5m - c_low_5m) <= 0.5)
                                         
                                         # Heavy volume/buying pressure check: volume >= 95% of previous completed 5m candle, OR a strong 12-point bounce
-                                        is_heavy_volume = (c_vol_5m >= prev_vol_5m * 0.95) or (live_ce_ltp >= recent_ce_low + 12.0)
+                                        is_heavy_volume = (c_vol_5m >= prev_vol_5m * 0.70) or (live_ce_ltp >= recent_ce_low + 12.0)
                                         
                                         if (is_reversing_to_open or is_open_equals_low) and is_heavy_volume:
                                             ce_entry_signal = True
