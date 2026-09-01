@@ -1751,15 +1751,21 @@ def run_cloud_bot() -> None:
                                 else:
                                     c_low_15m = min(c_low_15m, recent_ce_low)
 
-                                # Condition 1: Retest/Bounce near Previous Low (+/- 5 points)
-                                is_mfi_retest_ce = (ce_prev_low is not None) and (ce_prev_low - 5.0 <= live_ce_ltp <= ce_prev_low + 5.0) and (ce_mfi <= 1.0 or ce_mfi >= ce_prev_mfi)
-                                # Condition 2: Bounce to 15m Candle Open Price (when MFI == 0 or MFI is increasing)
-                                is_mfi_open_bounce_ce = (live_ce_ltp >= c_open_15m) and (ce_mfi <= 1.0 or ce_mfi > ce_prev_mfi)
+                                # Range and MFI Rising Conditions
+                                is_in_range_ce = abs(live_ce_ltp - c_open_15m) <= 20.0
+                                is_mfi_rising_ce = ce_mfi > ce_prev_mfi
 
-                                if is_mfi_retest_ce or is_mfi_open_bounce_ce:
+                                # Case 1: Consolidation / Range Breakout Start
+                                is_range_move_ce = is_in_range_ce and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce
+                                # Case 2: MFI == 0 and Live LTP reaches Open price after correcting to Low
+                                is_mfi_zero_and_bounce_ce = (ce_mfi <= 1.0) and (c_low_15m < c_open_15m) and (live_ce_ltp >= c_open_15m)
+                                # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
+                                is_retest_correction_ce = (not is_in_range_ce) and (ce_prev_low is not None) and (ce_prev_low - 10.0 <= live_ce_ltp <= ce_prev_low + 10.0) and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce
+
+                                if is_range_move_ce or is_mfi_zero_and_bounce_ce or is_retest_correction_ce:
                                     ce_entry_signal = True
-                                    active_sl_ce = max(1.0, c_low_15m - 5.0) if is_mfi_open_bounce_ce else max(1.0, live_ce_ltp - 15.0)
-                                    entry_type_str_ce = "MFI(5) Retest near Prev Low (+/-5pt)" if is_mfi_retest_ce else "MFI(5) Rising Bounce to 15m Open"
+                                    active_sl_ce = max(1.0, c_low_15m - 5.0)
+                                    entry_type_str_ce = "Range Breakout Bounce" if is_range_move_ce else ("MFI=0 and Open Bounce" if is_mfi_zero_and_bounce_ce else "Retest Post-Correction Bounce")
                                 elif current_slot == "09:15":
                                     if ce_in_35_range:
                                         if live_ce_ltp >= c_open_15m:
@@ -1786,15 +1792,21 @@ def run_cloud_bot() -> None:
                                 else:
                                     p_low_15m = min(p_low_15m, recent_pe_low)
 
-                                # Condition 1: Retest/Bounce near Previous Low (+/- 5 points)
-                                is_mfi_retest_pe = (pe_prev_low is not None) and (pe_prev_low - 5.0 <= live_pe_ltp <= pe_prev_low + 5.0) and (pe_mfi <= 1.0 or pe_mfi >= pe_prev_mfi)
-                                # Condition 2: Bounce to 15m Candle Open Price (when MFI == 0 or MFI is increasing)
-                                is_mfi_open_bounce_pe = (live_pe_ltp >= p_open_15m) and (pe_mfi <= 1.0 or pe_mfi > pe_prev_mfi)
+                                # Range and MFI Rising Conditions
+                                is_in_range_pe = abs(live_pe_ltp - p_open_15m) <= 20.0
+                                is_mfi_rising_pe = pe_mfi > pe_prev_mfi
 
-                                if is_mfi_retest_pe or is_mfi_open_bounce_pe:
+                                # Case 1: Consolidation / Range Breakout Start
+                                is_range_move_pe = is_in_range_pe and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe
+                                # Case 2: MFI == 0 and Live LTP reaches Open price after correcting to Low
+                                is_mfi_zero_and_bounce_pe = (pe_mfi <= 1.0) and (p_low_15m < p_open_15m) and (live_pe_ltp >= p_open_15m)
+                                # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
+                                is_retest_correction_pe = (not is_in_range_pe) and (pe_prev_low is not None) and (pe_prev_low - 10.0 <= live_pe_ltp <= pe_prev_low + 10.0) and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe
+
+                                if is_range_move_pe or is_mfi_zero_and_bounce_pe or is_retest_correction_pe:
                                     pe_entry_signal = True
-                                    active_sl_pe = max(1.0, p_low_15m - 5.0) if is_mfi_open_bounce_pe else max(1.0, live_pe_ltp - 15.0)
-                                    entry_type_str_pe = "MFI(5) Retest near Prev Low (+/-5pt)" if is_mfi_retest_pe else "MFI(5) Rising Bounce to 15m Open"
+                                    active_sl_pe = max(1.0, p_low_15m - 5.0)
+                                    entry_type_str_pe = "Range Breakout Bounce" if is_range_move_pe else ("MFI=0 and Open Bounce" if is_mfi_zero_and_bounce_pe else "Retest Post-Correction Bounce")
                                 elif current_slot == "09:15":
                                     if pe_in_35_range:
                                         if live_pe_ltp >= p_open_15m:
