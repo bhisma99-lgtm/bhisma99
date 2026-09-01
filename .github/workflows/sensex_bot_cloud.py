@@ -680,6 +680,60 @@ def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str)
     return None, None
 
 
+def get_15m_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 5) -> tuple[float, float, float | None]:
+    """Calculate Money Flow Index (MFI) on 15-minute timeframe.
+    Returns (curr_mfi, prev_mfi, prev_candle_low).
+    """
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(minutes=15 * (period + 10))
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "FIFTEEN_MINUTE",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if len(candles) >= period + 1:
+                typical_prices = []
+                volumes = []
+                lows = []
+                for c in candles:
+                    if len(c) >= 6:
+                        h, l, cl, v = float(c[2]), float(c[3]), float(c[4]), float(c[5])
+                        typical_prices.append((h + l + cl) / 3.0)
+                        volumes.append(v if v > 0 else 1.0)
+                        lows.append(l)
+
+                if len(typical_prices) >= period + 1:
+                    def calc_mfi_at(end_idx):
+                        pos_mf = 0.0
+                        neg_mf = 0.0
+                        for i in range(end_idx - period + 1, end_idx + 1):
+                            raw_mf = typical_prices[i] * volumes[i]
+                            if typical_prices[i] > typical_prices[i - 1]:
+                                pos_mf += raw_mf
+                            elif typical_prices[i] < typical_prices[i - 1]:
+                                neg_mf += raw_mf
+                        if pos_mf == 0.0:
+                            return 0.0
+                        if neg_mf == 0.0:
+                            return 100.0
+                        mfr = pos_mf / neg_mf
+                        return 100.0 - (100.0 / (1.0 + mfr))
+
+                    curr_mfi = calc_mfi_at(len(typical_prices) - 1)
+                    prev_mfi = calc_mfi_at(len(typical_prices) - 2)
+                    prev_low = lows[-2] if len(lows) >= 2 else lows[-1]
+                    return curr_mfi, prev_mfi, prev_low
+    except Exception as e:
+        logger.debug("Error calculating 15m MFI: %s", e)
+    return 50.0, 50.0, None
+
+
 def get_current_time_slot() -> str:
     import json
     now_dt = datetime.now(IST)
@@ -1688,30 +1742,31 @@ def run_cloud_bot() -> None:
                         
                         for opt_type in check_order:
                             if opt_type == "CE" and not ce_entry_signal and not pe_entry_signal:
-                                if current_slot == "09:15":
+                                ce_mfi, ce_prev_mfi, ce_prev_low = get_15m_mfi(smart_api, "BFO", ce_contract.symbol_token, period=5)
+                                c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
+                                if c_open_15m is None:
+                                    c_open_15m = grid.ce_leg.ltp
+                                if c_low_15m is None:
+                                    c_low_15m = min(recent_ce_low, live_ce_ltp)
+                                else:
+                                    c_low_15m = min(c_low_15m, recent_ce_low)
+
+                                # Condition 1: Retest/Bounce near Previous Low (+/- 5 points)
+                                is_mfi_retest_ce = (ce_prev_low is not None) and (ce_prev_low - 5.0 <= live_ce_ltp <= ce_prev_low + 5.0) and (ce_mfi <= 1.0 or ce_mfi >= ce_prev_mfi)
+                                # Condition 2: Bounce to 15m Candle Open Price (when MFI == 0 or MFI is increasing)
+                                is_mfi_open_bounce_ce = (live_ce_ltp >= c_open_15m) and (ce_mfi <= 1.0 or ce_mfi > ce_prev_mfi)
+
+                                if is_mfi_retest_ce or is_mfi_open_bounce_ce:
+                                    ce_entry_signal = True
+                                    active_sl_ce = max(1.0, c_low_15m - 5.0) if is_mfi_open_bounce_ce else max(1.0, live_ce_ltp - 15.0)
+                                    entry_type_str_ce = "MFI(5) Retest near Prev Low (+/-5pt)" if is_mfi_retest_ce else "MFI(5) Rising Bounce to 15m Open"
+                                elif current_slot == "09:15":
                                     if ce_in_35_range:
-                                        c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
-                                        if c_open_15m is None:
-                                            c_open_15m = grid.ce_leg.ltp
-                                        if c_low_15m is None:
-                                            c_low_15m = min(recent_ce_low, live_ce_ltp)
-                                        else:
-                                            c_low_15m = min(c_low_15m, recent_ce_low)
-                                            
-                                        # Price action: Reversing and bouncing to 15m candle Open post correction
                                         if live_ce_ltp >= c_open_15m:
                                             ce_entry_signal = True
                                             active_sl_ce = max(1.0, c_low_15m - 5.0)
                                             entry_type_str_ce = "First Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open"
                                 else:
-                                    c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
-                                    if c_open_15m is None:
-                                        c_open_15m = grid.ce_leg.ltp
-                                    if c_low_15m is None:
-                                        c_low_15m = min(recent_ce_low, live_ce_ltp)
-                                    else:
-                                        c_low_15m = min(c_low_15m, recent_ce_low)
-                                        
                                     if ce_in_35_range and live_ce_ltp >= c_open_15m:
                                         ce_entry_signal = True
                                         active_sl_ce = max(1.0, c_low_15m - 5.0)
@@ -1722,17 +1777,26 @@ def run_cloud_bot() -> None:
                                         entry_type_str_ce = f"{current_slot} Slot CE At/Near EPM Low Bounce (+5pt Reversal)"
                                         
                             elif opt_type == "PE" and not ce_entry_signal and not pe_entry_signal:
-                                if current_slot == "09:15":
+                                pe_mfi, pe_prev_mfi, pe_prev_low = get_15m_mfi(smart_api, "BFO", pe_contract.symbol_token, period=5)
+                                p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
+                                if p_open_15m is None:
+                                    p_open_15m = grid.pe_leg.ltp
+                                if p_low_15m is None:
+                                    p_low_15m = min(recent_pe_low, live_pe_ltp)
+                                else:
+                                    p_low_15m = min(p_low_15m, recent_pe_low)
+
+                                # Condition 1: Retest/Bounce near Previous Low (+/- 5 points)
+                                is_mfi_retest_pe = (pe_prev_low is not None) and (pe_prev_low - 5.0 <= live_pe_ltp <= pe_prev_low + 5.0) and (pe_mfi <= 1.0 or pe_mfi >= pe_prev_mfi)
+                                # Condition 2: Bounce to 15m Candle Open Price (when MFI == 0 or MFI is increasing)
+                                is_mfi_open_bounce_pe = (live_pe_ltp >= p_open_15m) and (pe_mfi <= 1.0 or pe_mfi > pe_prev_mfi)
+
+                                if is_mfi_retest_pe or is_mfi_open_bounce_pe:
+                                    pe_entry_signal = True
+                                    active_sl_pe = max(1.0, p_low_15m - 5.0) if is_mfi_open_bounce_pe else max(1.0, live_pe_ltp - 15.0)
+                                    entry_type_str_pe = "MFI(5) Retest near Prev Low (+/-5pt)" if is_mfi_retest_pe else "MFI(5) Rising Bounce to 15m Open"
+                                elif current_slot == "09:15":
                                     if pe_in_35_range:
-                                        p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
-                                        if p_open_15m is None:
-                                            p_open_15m = grid.pe_leg.ltp
-                                        if p_low_15m is None:
-                                            p_low_15m = min(recent_pe_low, live_pe_ltp)
-                                        else:
-                                            p_low_15m = min(p_low_15m, recent_pe_low)
-                                            
-                                        # Price action: Reversing and bouncing to 15m candle Open post correction
                                         if live_pe_ltp >= p_open_15m:
                                             pe_entry_signal = True
                                             active_sl_pe = max(1.0, p_low_15m - 5.0)
@@ -1923,11 +1987,15 @@ def run_cloud_bot() -> None:
                         recent_ce_low = live_ce_ltp
                         recent_pe_low = live_pe_ltp
 
-                    # 3. Standard Practical Target exit (Only if trailing stop is NOT active)
-                    elif not trailing_active and live_ce_ltp >= active_target:
-                        logger.info("🟢 [CE EXIT - TARGET HIT] CE LTP ₹%.2f hit Practical Target ₹%.2f", live_ce_ltp, active_target)
+                    # 3. Standard Practical Target exit or MFI Target Exit (Only if trailing stop is NOT active)
+                    c_mfi_val, c_mfi_prev_val, _ = get_15m_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
+                    is_mfi_tp_hit = (c_mfi_val >= 99.0) or (live_ce_ltp >= active_entry_price + 100.0 and c_mfi_val < c_mfi_prev_val)
+                    
+                    if not trailing_active and (live_ce_ltp >= active_target or is_mfi_tp_hit):
+                        tp_reason = "MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit else f"Practical Target (₹{active_target:.2f})"
+                        logger.info("🟢 [CE EXIT - TARGET HIT] CE LTP ₹%.2f hit %s", live_ce_ltp, tp_reason)
                         send_mobile_alert(f"🟢 *CE EXIT - TARGET REACHED*\n\n"
-                                          f"Reason: Practical Target (₹{active_target:.2f}) reached\n"
+                                          f"Reason: {tp_reason}\n"
                                           f"Contract: *{active_contract.trading_symbol}*\n"
                                           f"Exit Price: ₹{live_ce_ltp:.2f} (Entry: ₹{active_entry_price:.2f})\n"
                                           f"Trades: {trades_completed + 1}/{max_trades_per_day}")
@@ -2046,11 +2114,15 @@ def run_cloud_bot() -> None:
                         recent_ce_low = live_ce_ltp
                         recent_pe_low = live_pe_ltp
 
-                    # 3. Standard Practical Target exit (Only if trailing stop is NOT active)
-                    elif not trailing_active and live_pe_ltp >= active_target:
-                        logger.info("🟢 [PE EXIT - TARGET HIT] PE LTP ₹%.2f hit Practical Target ₹%.2f", live_pe_ltp, active_target)
+                    # 3. Standard Practical Target exit or MFI Target Exit (Only if trailing stop is NOT active)
+                    p_mfi_val, p_mfi_prev_val, _ = get_15m_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
+                    is_mfi_tp_hit_pe = (p_mfi_val >= 99.0) or (live_pe_ltp >= active_entry_price + 100.0 and p_mfi_val < p_mfi_prev_val)
+                    
+                    if not trailing_active and (live_pe_ltp >= active_target or is_mfi_tp_hit_pe):
+                        tp_reason_pe = "MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit_pe else f"Practical Target (₹{active_target:.2f})"
+                        logger.info("🟢 [PE EXIT - TARGET HIT] PE LTP ₹%.2f hit %s", live_pe_ltp, tp_reason_pe)
                         send_mobile_alert(f"🟢 *PE EXIT - TARGET REACHED*\n\n"
-                                          f"Reason: Practical Target (₹{active_target:.2f}) reached\n"
+                                          f"Reason: {tp_reason_pe}\n"
                                           f"Contract: *{active_contract.trading_symbol}*\n"
                                           f"Exit Price: ₹{live_pe_ltp:.2f} (Entry: ₹{active_entry_price:.2f})\n"
                                           f"Trades: {trades_completed + 1}/{max_trades_per_day}")
