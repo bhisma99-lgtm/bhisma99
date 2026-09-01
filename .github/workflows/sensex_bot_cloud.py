@@ -734,6 +734,48 @@ def get_15m_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 
     return 50.0, 50.0, None
 
 
+def check_green_breakout_structure(smart_api: Any, exchange: str, symbol_token: str, live_price: float) -> tuple[bool, str]:
+    """Identify sustainable breakout: consecutive green candles OR a breach of the prior high with a green body close."""
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(minutes=60)
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "FIFTEEN_MINUTE",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if len(candles) >= 2:
+                last = candles[-1]
+                prev = candles[-2]
+                
+                prev_high = float(prev[2])
+                prev_open = float(prev[1])
+                prev_close = float(prev[4])
+                
+                last_open = float(last[1])
+                
+                is_last_green = live_price > last_open
+                is_prev_green = prev_close > prev_open
+                breaches_prev_high = live_price > prev_high
+                
+                # 1. Sustainable Breakout Rule: Consecutive green candles OR breach of prior high in Green
+                has_consecutive_green = is_last_green and is_prev_green
+                has_green_high_breach = breaches_prev_high and is_last_green
+                
+                if has_consecutive_green or has_green_high_breach:
+                    return True, "Sustainable Breakout Confirmed (Consecutive Green or High Breach in Green)"
+                else:
+                    return False, "Choppy consolidation without consecutive green or prior high breach in Green"
+    except Exception as e:
+        logger.debug("Error checking breakout structure: %s", e)
+    return True, "Default breakout pass"
+
+
 def get_current_time_slot() -> str:
     import json
     now_dt = datetime.now(IST)
@@ -1755,12 +1797,13 @@ def run_cloud_bot() -> None:
                                 is_in_range_ce = abs(live_ce_ltp - c_open_15m) <= 20.0
                                 is_mfi_rising_ce = ce_mfi > ce_prev_mfi
 
-                                # Case 1: Consolidation / Range Breakout Start
-                                is_range_move_ce = is_in_range_ce and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce
+                                # Case 1: Consolidation / Sustainable Range Breakout Start
+                                is_sustainable_ce, _ = check_green_breakout_structure(smart_api, "BFO", ce_contract.symbol_token, live_ce_ltp)
+                                is_range_move_ce = is_in_range_ce and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce and is_sustainable_ce
                                 # Case 2: MFI == 0 and Live LTP reaches Open price after correcting to Low
                                 is_mfi_zero_and_bounce_ce = (ce_mfi <= 1.0) and (c_low_15m < c_open_15m) and (live_ce_ltp >= c_open_15m)
                                 # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
-                                is_retest_correction_ce = (not is_in_range_ce) and (ce_prev_low is not None) and (ce_prev_low - 10.0 <= live_ce_ltp <= ce_prev_low + 10.0) and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce
+                                is_retest_correction_ce = (not is_in_range_ce) and (ce_prev_low is not None) and (ce_prev_low - 10.0 <= live_ce_ltp <= ce_prev_low + 10.0) and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce and is_sustainable_ce
 
                                 if is_range_move_ce or is_mfi_zero_and_bounce_ce or is_retest_correction_ce:
                                     ce_entry_signal = True
@@ -1796,12 +1839,13 @@ def run_cloud_bot() -> None:
                                 is_in_range_pe = abs(live_pe_ltp - p_open_15m) <= 20.0
                                 is_mfi_rising_pe = pe_mfi > pe_prev_mfi
 
-                                # Case 1: Consolidation / Range Breakout Start
-                                is_range_move_pe = is_in_range_pe and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe
+                                # Case 1: Consolidation / Sustainable Range Breakout Start
+                                is_sustainable_pe, _ = check_green_breakout_structure(smart_api, "BFO", pe_contract.symbol_token, live_pe_ltp)
+                                is_range_move_pe = is_in_range_pe and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe and is_sustainable_pe
                                 # Case 2: MFI == 0 and Live LTP reaches Open price after correcting to Low
                                 is_mfi_zero_and_bounce_pe = (pe_mfi <= 1.0) and (p_low_15m < p_open_15m) and (live_pe_ltp >= p_open_15m)
                                 # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
-                                is_retest_correction_pe = (not is_in_range_pe) and (pe_prev_low is not None) and (pe_prev_low - 10.0 <= live_pe_ltp <= pe_prev_low + 10.0) and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe
+                                is_retest_correction_pe = (not is_in_range_pe) and (pe_prev_low is not None) and (pe_prev_low - 10.0 <= live_pe_ltp <= pe_prev_low + 10.0) and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe and is_sustainable_pe
 
                                 if is_range_move_pe or is_mfi_zero_and_bounce_pe or is_retest_correction_pe:
                                     pe_entry_signal = True
