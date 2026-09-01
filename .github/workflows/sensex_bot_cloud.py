@@ -1449,8 +1449,8 @@ def run_cloud_bot() -> None:
     except Exception as e:
         logger.warning("Could not initialize WebSocket Feed, falling back to HTTP: %s", e)
 
-    # Continuous Monitoring Loop
-    poll_interval = 1.0
+    # Continuous Monitoring Loop: 0.05s (50ms) high-frequency tick drive when WS feed is active, 1.0s HTTP fallback
+    poll_interval = 0.05
     is_continuous = "--once" not in sys.argv
     execution_mode = "LIVE" if "--live" in sys.argv else "PAPER"
 
