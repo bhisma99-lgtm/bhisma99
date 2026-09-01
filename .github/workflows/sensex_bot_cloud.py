@@ -1651,62 +1651,110 @@ def run_cloud_bot() -> None:
                     else:
                         now_time = datetime.now(IST).time()
                         
-                        # --- CE ENTRY SIGNAL EVALUATION ---
+                        # EPM Low Levels for CE and PE
                         ce_low_level = grid.ce_leg.epm_lower_range
+                        pe_low_level = grid.pe_leg.epm_lower_range
+                        
+                        # Calculate distances to EPM Low to determine option proximity
+                        ce_dist_recent = abs(recent_ce_low - ce_low_level)
+                        pe_dist_recent = abs(recent_pe_low - pe_low_level)
+                        ce_dist_ltp = abs(live_ce_ltp - ce_low_level)
+                        pe_dist_ltp = abs(live_pe_ltp - pe_low_level)
+                        
+                        ce_min_dist = min(ce_dist_recent, ce_dist_ltp)
+                        pe_min_dist = min(pe_dist_recent, pe_dist_ltp)
+                        
+                        # Symmetric +/- 35 Point Rule: Check if Option Price (recent low or live LTP) is near 35 +/- points of EPM Low
+                        ce_in_35_range = (ce_low_level - 35.0 <= recent_ce_low <= ce_low_level + 35.0) or (ce_low_level - 35.0 <= live_ce_ltp <= ce_low_level + 35.0)
+                        pe_in_35_range = (pe_low_level - 35.0 <= recent_pe_low <= pe_low_level + 35.0) or (pe_low_level - 35.0 <= live_pe_ltp <= pe_low_level + 35.0)
+                        
+                        if loop_counter % 30 == 0:
+                            logger.debug("[SIGNAL EVAL] Slot: %s | CE dist: %.2f (Near 35pt: %s) | PE dist: %.2f (Near 35pt: %s)",
+                                         current_slot, ce_min_dist, ce_in_35_range, pe_min_dist, pe_in_35_range)
+                        
+                        # First Slot check: Determine which Option Type is nearer to EPM Low to observe first
+                        if current_slot == "09:15" and pe_min_dist < ce_min_dist:
+                            check_order = ["PE", "CE"]
+                        else:
+                            check_order = ["CE", "PE"]
+                        
                         ce_entry_signal = False
                         active_sl_ce = grid.ce_leg.sl_auto
                         entry_type_str_ce = ""
                         
-                        if current_slot == "09:15":
-                            # 9:15 Slot entry logic: Active during 9:15 AM to 9:30 AM
-                            if (now_time.hour == 9 and 15 <= now_time.minute < 30):
-                                has_corrected_ce = (ce_low_level - 35.0 <= recent_ce_low < ce_low_level)
-                                if has_corrected_ce:
-                                    candles_5m = get_current_5m_candles(smart_api, "BFO", ce_contract.symbol_token)
-                                    if len(candles_5m) >= 2:
-                                        last_candle = candles_5m[-1]
-                                        prev_candle = candles_5m[-2]
-                                        
-                                        c_open_5m = float(last_candle[1])
-                                        c_low_5m = float(last_candle[3])
-                                        c_vol_5m = float(last_candle[5])
-                                        prev_vol_5m = float(prev_candle[5])
-                                        
-                                        is_reversing_to_open = (live_ce_ltp >= c_open_5m)
-                                        is_open_equals_low = (abs(c_open_5m - c_low_5m) <= 0.5)
-                                        
-                                        # Heavy volume/buying pressure check: volume >= 95% of previous completed 5m candle, OR a strong 12-point bounce
-                                        is_heavy_volume = (c_vol_5m >= prev_vol_5m * 0.95) or (live_ce_ltp >= recent_ce_low + 12.0)
-                                        
-                                        if (is_reversing_to_open or is_open_equals_low) and is_heavy_volume:
+                        pe_entry_signal = False
+                        active_sl_pe = grid.pe_leg.sl_auto
+                        entry_type_str_pe = ""
+                        
+                        for opt_type in check_order:
+                            if opt_type == "CE" and not ce_entry_signal and not pe_entry_signal:
+                                if current_slot == "09:15":
+                                    if ce_in_35_range:
+                                        c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
+                                        if c_open_15m is None:
+                                            c_open_15m = grid.ce_leg.ltp
+                                        if c_low_15m is None:
+                                            c_low_15m = min(recent_ce_low, live_ce_ltp)
+                                        else:
+                                            c_low_15m = min(c_low_15m, recent_ce_low)
+                                            
+                                        # Price action: Reversing and bouncing to 15m candle Open post correction
+                                        if live_ce_ltp >= c_open_15m:
                                             ce_entry_signal = True
-                                            active_sl_ce = ce_low_level - 15.0  # Maintain standard SL 15 points
-                                            entry_type_str_ce = "9:15 Slot 5m Reversal to Open/Open=Low with Volume"
-                        else:
-                            # 9:45 and 12:15 slot entry logic: No change in buffer from EPM low, use 15m candle bounce
-                            # Case 1: Near EPM Low (+/- 2 points) AND has bottomed/reversed by at least 5 points (prevents buying a falling knife)
-                            is_at_or_near_low_ce = (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp >= recent_ce_low + 5.0)
-                            
-                            # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
-                            is_broken_low_bounce_ce = False
-                            ce_candle_low_sl = ce_low_level - 15.0
-                            
-                            if (ce_low_level - 20.0 <= live_ce_ltp < ce_low_level) and (live_spot >= spot_open):
-                                c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
-                                if c_open_15m is not None and c_low_15m is not None:
-                                    if live_ce_ltp >= c_open_15m:
-                                        is_broken_low_bounce_ce = True
-                                        ce_candle_low_sl = c_low_15m
+                                            active_sl_ce = max(1.0, c_low_15m - 5.0)
+                                            entry_type_str_ce = "First Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open"
+                                else:
+                                    c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
+                                    if c_open_15m is None:
+                                        c_open_15m = grid.ce_leg.ltp
+                                    if c_low_15m is None:
+                                        c_low_15m = min(recent_ce_low, live_ce_ltp)
+                                    else:
+                                        c_low_15m = min(c_low_15m, recent_ce_low)
                                         
-                            if is_at_or_near_low_ce:
-                                ce_entry_signal = True
-                                active_sl_ce = grid.ce_leg.sl_auto
-                                entry_type_str_ce = "At/Near EPM Low Bounce (+5pt Reversal)"
-                            elif is_broken_low_bounce_ce:
-                                ce_entry_signal = True
-                                active_sl_ce = max(1.0, ce_candle_low_sl - 3.0)
-                                entry_type_str_ce = "EPM Break & 15m Candle Open Bounce"
-
+                                    if ce_in_35_range and live_ce_ltp >= c_open_15m:
+                                        ce_entry_signal = True
+                                        active_sl_ce = max(1.0, c_low_15m - 5.0)
+                                        entry_type_str_ce = f"{current_slot} Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open"
+                                    elif (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp >= recent_ce_low + 5.0):
+                                        ce_entry_signal = True
+                                        active_sl_ce = max(1.0, c_low_15m - 5.0)
+                                        entry_type_str_ce = f"{current_slot} Slot CE At/Near EPM Low Bounce (+5pt Reversal)"
+                                        
+                            elif opt_type == "PE" and not ce_entry_signal and not pe_entry_signal:
+                                if current_slot == "09:15":
+                                    if pe_in_35_range:
+                                        p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
+                                        if p_open_15m is None:
+                                            p_open_15m = grid.pe_leg.ltp
+                                        if p_low_15m is None:
+                                            p_low_15m = min(recent_pe_low, live_pe_ltp)
+                                        else:
+                                            p_low_15m = min(p_low_15m, recent_pe_low)
+                                            
+                                        # Price action: Reversing and bouncing to 15m candle Open post correction
+                                        if live_pe_ltp >= p_open_15m:
+                                            pe_entry_signal = True
+                                            active_sl_pe = max(1.0, p_low_15m - 5.0)
+                                            entry_type_str_pe = "First Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open"
+                                else:
+                                    p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
+                                    if p_open_15m is None:
+                                        p_open_15m = grid.pe_leg.ltp
+                                    if p_low_15m is None:
+                                        p_low_15m = min(recent_pe_low, live_pe_ltp)
+                                    else:
+                                        p_low_15m = min(p_low_15m, recent_pe_low)
+                                        
+                                    if pe_in_35_range and live_pe_ltp >= p_open_15m:
+                                        pe_entry_signal = True
+                                        active_sl_pe = max(1.0, p_low_15m - 5.0)
+                                        entry_type_str_pe = f"{current_slot} Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open"
+                                    elif (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp >= recent_pe_low + 5.0):
+                                        pe_entry_signal = True
+                                        active_sl_pe = max(1.0, p_low_15m - 5.0)
+                                        entry_type_str_pe = f"{current_slot} Slot PE At/Near EPM Low Bounce (+5pt Reversal)"
+                        
                         # Trigger CE Long Entry
                         if ce_entry_signal:
                             bot_state = "CE_LONG"
@@ -1745,100 +1793,43 @@ def run_cloud_bot() -> None:
                             # Save state immediately to memory
                             save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
 
-                        # --- PE ENTRY SIGNAL EVALUATION ---
-                        else:
-                            pe_low_level = grid.pe_leg.epm_lower_range
-                            pe_entry_signal = False
-                            active_sl_pe = grid.pe_leg.sl_auto
-                            entry_type_str_pe = ""
+                        # Trigger PE Long Entry
+                        elif pe_entry_signal:
+                            bot_state = "PE_LONG"
+                            active_contract = pe_contract
+                            active_entry_price = live_pe_ltp
+                            active_target = grid.pe_leg.practical_target
+                            active_sl = active_sl_pe
+                            entry_time = datetime.now(IST)
+                            qty_to_trade = lot_size * 20
+                            original_sl_distance = max(15.0, active_entry_price - active_sl)  # Enforce min 15pt risk distance
+                            trailing_active = False
+                            peak_price = active_entry_price
+                            offloaded = False
                             
-                            if current_slot == "09:15":
-                                # 9:15 Slot entry logic: Active during 9:15 AM to 9:30 AM
-                                if (now_time.hour == 9 and 15 <= now_time.minute < 30):
-                                    has_corrected_pe = (pe_low_level - 35.0 <= recent_pe_low < pe_low_level)
-                                    if has_corrected_pe:
-                                        candles_5m = get_current_5m_candles(smart_api, "BFO", pe_contract.symbol_token)
-                                        if len(candles_5m) >= 2:
-                                            last_candle = candles_5m[-1]
-                                            prev_candle = candles_5m[-2]
-                                            
-                                            c_open_5m = float(last_candle[1])
-                                            c_low_5m = float(last_candle[3])
-                                            c_vol_5m = float(last_candle[5])
-                                            prev_vol_5m = float(prev_candle[5])
-                                            
-                                            is_reversing_to_open = (live_pe_ltp >= c_open_5m)
-                                            is_open_equals_low = (abs(c_open_5m - c_low_5m) <= 0.5)
-                                            
-                                            # Heavy volume/buying pressure check: volume >= 95% of previous completed 5m candle, OR a strong 12-point bounce
-                                            is_heavy_volume = (c_vol_5m >= prev_vol_5m * 0.95) or (live_pe_ltp >= recent_pe_low + 12.0)
-                                            
-                                            if (is_reversing_to_open or is_open_equals_low) and is_heavy_volume:
-                                                pe_entry_signal = True
-                                                active_sl_pe = pe_low_level - 15.0  # Maintain standard SL 15 points
-                                                entry_type_str_pe = "9:15 Slot 5m Reversal to Open/Open=Low with Volume"
-                            else:
-                                # 9:45 and 12:15 slot entry logic: No change in buffer from EPM low, use 15m candle bounce
-                                # Case 1: Near EPM Low (+/- 2 points) AND has bottomed/reversed by at least 5 points (prevents buying a falling knife)
-                                is_at_or_near_low_pe = (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp >= recent_pe_low + 5.0)
-                                
-                                # Case 2: Broken low by max 20 points, bouncing back up to 15-min candle Open
-                                is_broken_low_bounce_pe = False
-                                pe_candle_low_sl = pe_low_level - 15.0
-                                
-                                if (pe_low_level - 20.0 <= live_pe_ltp < pe_low_level) and (live_spot < spot_open):
-                                    c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
-                                    if c_open_15m is not None and c_low_15m is not None:
-                                        if live_pe_ltp >= c_open_15m:
-                                            is_broken_low_bounce_pe = True
-                                            pe_candle_low_sl = c_low_15m
-                                            
-                                if is_at_or_near_low_pe:
-                                    pe_entry_signal = True
-                                    active_sl_pe = grid.pe_leg.sl_auto
-                                    entry_type_str_pe = "At/Near EPM Low Bounce (+5pt Reversal)"
-                                elif is_broken_low_bounce_pe:
-                                    pe_entry_signal = True
-                                    active_sl_pe = max(1.0, pe_candle_low_sl - 3.0)
-                                    entry_type_str_pe = "EPM Break & 15m Candle Open Bounce"
-
-                            # Trigger PE Long Entry
-                            if pe_entry_signal:
-                                bot_state = "PE_LONG"
-                                active_contract = pe_contract
-                                active_entry_price = live_pe_ltp
-                                active_target = grid.pe_leg.practical_target
-                                active_sl = active_sl_pe
-                                entry_time = datetime.now(IST)
-                                qty_to_trade = lot_size * 20
-                                original_sl_distance = max(15.0, active_entry_price - active_sl)  # Enforce min 15pt risk distance
-                                trailing_active = False
-                                peak_price = active_entry_price
-                                offloaded = False
-                                
-                                logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
-                                send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
-                                                  f"Contract: *{active_contract.trading_symbol}*\n"
-                                                  f"Entry Price: ₹{active_entry_price:.2f}\n"
-                                                  f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
-                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
-                                
-                                # Place Live Order
-                                if execution_mode == "LIVE":
-                                    submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
-                                
-                                # Log to Excel
-                                excel_tracker.add_order({
-                                    "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                                    "mode": execution_mode,
-                                    "state": "ENTRY",
-                                    "trading_symbol": active_contract.trading_symbol,
-                                    "price": active_entry_price,
-                                    "qty": qty_to_trade,
-                                    "trades_count": trades_completed + 1
-                                })
-                                # Save state immediately to memory
-                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                            logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
+                            send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
+                                              f"Contract: *{active_contract.trading_symbol}*\n"
+                                              f"Entry Price: ₹{active_entry_price:.2f}\n"
+                                              f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
+                                              f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                            
+                            # Place Live Order
+                            if execution_mode == "LIVE":
+                                submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
+                            
+                            # Log to Excel
+                            excel_tracker.add_order({
+                                "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                                "mode": execution_mode,
+                                "state": "ENTRY",
+                                "trading_symbol": active_contract.trading_symbol,
+                                "price": active_entry_price,
+                                "qty": qty_to_trade,
+                                "trades_count": trades_completed + 1
+                            })
+                            # Save state immediately to memory
+                            save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
 
                 elif bot_state == "CE_LONG":
                     # --- CE EXIT EVALUATION ---
