@@ -330,6 +330,10 @@ class TelegramCommandListener:
 
                             if first_word in ("STOP", "HALT", "EXIT", "CLOSE", "/STOP"):
                                 return "STOP", None
+                            elif first_word in ("Y", "YES", "/Y"):
+                                return "Y", None
+                            elif first_word in ("N", "NO", "/N"):
+                                return "N", None
                             elif first_word in ("LIVE", "REAL", "/LIVE"):
                                 lots = 1
                                 if len(parts) > 1 and parts[1].isdigit():
@@ -1613,6 +1617,14 @@ def run_cloud_bot() -> None:
     loop_counter = 0
     is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
 
+    # Pending swap trade states
+    pending_swap_signal = None  # None, "CE", or "PE"
+    pending_swap_contract = None
+    pending_swap_sl = 0.0
+    pending_swap_target = 0.0
+    pending_swap_type_str = ""
+    pending_swap_time = None
+
     # Trailing Stop-Loss Variables
     original_sl_distance = 0.0
     trailing_active = False
@@ -1782,6 +1794,72 @@ def run_cloud_bot() -> None:
                     max_trades_per_day = int(remote_lots)
                     logger.info("⚙️ [TELEGRAM] Max Trades Limit manually updated to %d.", max_trades_per_day)
                     send_mobile_alert(f"⚙️ *MAX TRADES LIMIT UPDATED*\n\nMaximum trades per day manually updated to *{max_trades_per_day} trades* via Telegram.")
+                elif cmd == "Y" and pending_swap_signal and bot_state in ("CE_LONG", "PE_LONG"):
+                    if pending_swap_time and (datetime.now(IST) - pending_swap_time).total_seconds() <= 60.0:
+                        sys.stdout.write("\n")
+                        logger.info("🔄 [SWAP] User confirmed position swap to %s via Telegram!", pending_swap_signal)
+                        
+                        exit_price = live_ce_ltp if bot_state == "CE_LONG" else live_pe_ltp
+                        logger.info("🔴 [SWAP EXIT] Exiting active %s position at ₹%.2f", active_contract.trading_symbol, exit_price)
+                        send_mobile_alert(f"🔴 *SWAP EXIT: EXITING CURRENT POSITION*\n\nClosing *{active_contract.trading_symbol}* at ₹{exit_price:.2f} to switch trades.")
+                        
+                        if execution_mode == "LIVE":
+                            execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, exit_price)
+                            
+                        excel_tracker.add_order({
+                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": execution_mode,
+                            "state": "EXIT_SWAP",
+                            "trading_symbol": active_contract.trading_symbol,
+                            "price": exit_price,
+                            "qty": lot_size * 20,
+                            "trades_count": trades_completed + 1
+                        })
+                        
+                        bot_state = f"{pending_swap_signal}_LONG"
+                        active_contract = pending_swap_contract
+                        active_entry_price = live_ce_ltp if pending_swap_signal == "CE" else live_pe_ltp
+                        active_target = pending_swap_target
+                        active_sl = pending_swap_sl
+                        entry_time = datetime.now(IST)
+                        qty_to_trade = lot_size * 20
+                        original_sl_distance = max(15.0, active_entry_price - active_sl)
+                        trailing_active = False
+                        peak_price = active_entry_price
+                        offloaded = False
+                        
+                        logger.info("🟢 [SWAP ENTRY] Switched into %s setup at ₹%.2f (SL: ₹%.2f, Target: ₹%.2f)", bot_state, active_entry_price, active_sl, active_target)
+                        send_mobile_alert(f"🟢 *SWAP ENTRY SUCCESSFUL ({pending_swap_type_str})*\n\n"
+                                          f"Contract: *{active_contract.trading_symbol}*\n"
+                                          f"Entry Price: ₹{active_entry_price:.2f}\n"
+                                          f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
+                                          f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                                          
+                        if execution_mode == "LIVE":
+                            submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
+                            
+                        excel_tracker.add_order({
+                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                            "mode": execution_mode,
+                            "state": "ENTRY_SWAP",
+                            "trading_symbol": active_contract.trading_symbol,
+                            "price": active_entry_price,
+                            "qty": qty_to_trade,
+                            "trades_count": trades_completed + 1
+                        })
+                        save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                    else:
+                        send_mobile_alert("⚠️ *SWAP REQUEST EXPIRED*\nThe pending swap request has expired (60 seconds limit). Current trade maintained.")
+                    
+                    pending_swap_signal = None
+                    pending_swap_contract = None
+                    pending_swap_time = None
+                elif cmd == "N" and pending_swap_signal:
+                    logger.info("⚙️ [TELEGRAM] User declined trade swap.")
+                    send_mobile_alert("⚙️ *SWAP REQUEST DECLINED*\nMaintaining existing position as is.")
+                    pending_swap_signal = None
+                    pending_swap_contract = None
+                    pending_swap_time = None
                 elif cmd == "SL" and bot_state in ("CE_LONG", "PE_LONG"):
                     active_sl = remote_lots
                     logger.info("⚠️ [TELEGRAM] Stop Loss manually updated to ₹%.2f.", active_sl)
@@ -1882,9 +1960,9 @@ def run_cloud_bot() -> None:
                         recent_ce_low = live_ce_ltp
                         recent_pe_low = live_pe_ltp
 
-                # 3. State Machine Signal Evaluation
-                if bot_state == "IDLE":
-                    if trades_completed >= max_trades_per_day:
+                # 3. State Machine Signal Evaluation (Always run to analyze and alert signals, but only execute trade automatically if IDLE)
+                if True:
+                    if bot_state == "IDLE" and trades_completed >= max_trades_per_day:
                         pass
                     else:
                         now_time = datetime.now(IST).time()
@@ -2139,85 +2217,111 @@ def run_cloud_bot() -> None:
                         
                         # Trigger CE Long Entry
                         if ce_entry_signal:
-                            bot_state = "CE_LONG"
-                            active_contract = ce_contract
-                            active_entry_price = live_ce_ltp
-                            # Ensure target is dynamically calculated relative to entry price to avoid inversion
-                            target_offset_ce = max(15.0, grid.ce_leg.practical_target - grid.ce_leg.ltp)
-                            active_target = active_entry_price + target_offset_ce
-                            active_sl = active_sl_ce
-                            entry_time = datetime.now(IST)
-                            qty_to_trade = lot_size * 20
-                            original_sl_distance = max(15.0, active_entry_price - active_sl)  # Enforce min 15pt risk distance
-                            trailing_active = False
-                            peak_price = active_entry_price
-                            offloaded = False
-                            
-                            sys.stdout.write("\n")
-                            logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_ce_ltp, entry_type_str_ce, active_sl, active_target)
-                            send_mobile_alert(f"🟢 *CE ENTRY SIGNAL ALIGNED ({entry_type_str_ce})*\n\n"
-                                              f"Contract: *{active_contract.trading_symbol}*\n"
-                                              f"Entry Price: ₹{active_entry_price:.2f}\n"
-                                              f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
-                                              f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
-                            
-                            # Place Live Order
-                            if execution_mode == "LIVE":
-                                submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
-                            
-                            # Log to Excel
-                            excel_tracker.add_order({
-                                "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                                "mode": execution_mode,
-                                "state": "ENTRY",
-                                "trading_symbol": active_contract.trading_symbol,
-                                "price": active_entry_price,
-                                "qty": qty_to_trade,
-                                "trades_count": trades_completed + 1
-                            })
-                            # Save state immediately to memory
-                            save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                            if bot_state == "IDLE":
+                                bot_state = "CE_LONG"
+                                active_contract = ce_contract
+                                active_entry_price = live_ce_ltp
+                                target_offset_ce = max(15.0, grid.ce_leg.practical_target - grid.ce_leg.ltp)
+                                active_target = active_entry_price + target_offset_ce
+                                active_sl = active_sl_ce
+                                entry_time = datetime.now(IST)
+                                qty_to_trade = lot_size * 20
+                                original_sl_distance = max(15.0, active_entry_price - active_sl)
+                                trailing_active = False
+                                peak_price = active_entry_price
+                                offloaded = False
+                                
+                                sys.stdout.write("\n")
+                                logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_ce_ltp, entry_type_str_ce, active_sl, active_target)
+                                send_mobile_alert(f"🟢 *CE ENTRY SIGNAL ALIGNED ({entry_type_str_ce})*\n\n"
+                                                  f"Contract: *{active_contract.trading_symbol}*\n"
+                                                  f"Entry Price: ₹{active_entry_price:.2f}\n"
+                                                  f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
+                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                                
+                                if execution_mode == "LIVE":
+                                    submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
+                                
+                                excel_tracker.add_order({
+                                    "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                                    "mode": execution_mode,
+                                    "state": "ENTRY",
+                                    "trading_symbol": active_contract.trading_symbol,
+                                    "price": active_entry_price,
+                                    "qty": qty_to_trade,
+                                    "trades_count": trades_completed + 1
+                                })
+                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                            elif bot_state == "PE_LONG":
+                                if pending_swap_signal != "CE":
+                                    pending_swap_signal = "CE"
+                                    pending_swap_contract = ce_contract
+                                    pending_swap_sl = active_sl_ce
+                                    pending_swap_target = live_ce_ltp + max(15.0, grid.ce_leg.practical_target - grid.ce_leg.ltp)
+                                    pending_swap_type_str = entry_type_str_ce
+                                    pending_swap_time = datetime.now(IST)
+                                    
+                                    send_mobile_alert(
+                                        f"🔔 *NEW CE SIGNAL ALIGNED ({entry_type_str_ce})*\n\n"
+                                        f"Current holding: *{active_contract.trading_symbol}* (PE_LONG)\n"
+                                        f"New Setup: *{ce_contract.trading_symbol}* at ₹{live_ce_ltp:.2f}\n"
+                                        f"Stop Loss: ₹{pending_swap_sl:.2f} | Target: ₹{pending_swap_target:.2f}\n\n"
+                                        f"👉 *Would you like to SWITCH trades?* Send 'Y' to switch instantly at Market, or 'N' to ignore."
+                                    )
 
                         # Trigger PE Long Entry
                         elif pe_entry_signal:
-                            bot_state = "PE_LONG"
-                            active_contract = pe_contract
-                            active_entry_price = live_pe_ltp
-                            # Ensure target is dynamically calculated relative to entry price to avoid inversion
-                            target_offset_pe = max(15.0, grid.pe_leg.practical_target - grid.pe_leg.ltp)
-                            active_target = active_entry_price + target_offset_pe
-                            active_sl = active_sl_pe
-                            entry_time = datetime.now(IST)
-                            qty_to_trade = lot_size * 20
-                            original_sl_distance = max(15.0, active_entry_price - active_sl)  # Enforce min 15pt risk distance
-                            trailing_active = False
-                            peak_price = active_entry_price
-                            offloaded = False
-                            
-                            sys.stdout.write("\n")
-                            logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
-                            send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
-                                              f"Contract: *{active_contract.trading_symbol}*\n"
-                                              f"Entry Price: ₹{active_entry_price:.2f}\n"
-                                              f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
-                                              f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
-                            
-                            # Place Live Order
-                            if execution_mode == "LIVE":
-                                submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
-                            
-                            # Log to Excel
-                            excel_tracker.add_order({
-                                "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                                "mode": execution_mode,
-                                "state": "ENTRY",
-                                "trading_symbol": active_contract.trading_symbol,
-                                "price": active_entry_price,
-                                "qty": qty_to_trade,
-                                "trades_count": trades_completed + 1
-                            })
-                            # Save state immediately to memory
-                            save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                            if bot_state == "IDLE":
+                                bot_state = "PE_LONG"
+                                active_contract = pe_contract
+                                active_entry_price = live_pe_ltp
+                                target_offset_pe = max(15.0, grid.pe_leg.practical_target - grid.pe_leg.ltp)
+                                active_target = active_entry_price + target_offset_pe
+                                active_sl = active_sl_pe
+                                entry_time = datetime.now(IST)
+                                qty_to_trade = lot_size * 20
+                                original_sl_distance = max(15.0, active_entry_price - active_sl)
+                                trailing_active = False
+                                peak_price = active_entry_price
+                                offloaded = False
+                                
+                                sys.stdout.write("\n")
+                                logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
+                                send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
+                                                  f"Contract: *{active_contract.trading_symbol}*\n"
+                                                  f"Entry Price: ₹{active_entry_price:.2f}\n"
+                                                  f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
+                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                                
+                                if execution_mode == "LIVE":
+                                    submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
+                                
+                                excel_tracker.add_order({
+                                    "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                                    "mode": execution_mode,
+                                    "state": "ENTRY",
+                                    "trading_symbol": active_contract.trading_symbol,
+                                    "price": active_entry_price,
+                                    "qty": qty_to_trade,
+                                    "trades_count": trades_completed + 1
+                                })
+                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                            elif bot_state == "CE_LONG":
+                                if pending_swap_signal != "PE":
+                                    pending_swap_signal = "PE"
+                                    pending_swap_contract = pe_contract
+                                    pending_swap_sl = active_sl_pe
+                                    pending_swap_target = live_pe_ltp + max(15.0, grid.pe_leg.practical_target - grid.pe_leg.ltp)
+                                    pending_swap_type_str = entry_type_str_pe
+                                    pending_swap_time = datetime.now(IST)
+                                    
+                                    send_mobile_alert(
+                                        f"🔔 *NEW PE SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
+                                        f"Current holding: *{active_contract.trading_symbol}* (CE_LONG)\n"
+                                        f"New Setup: *{pe_contract.trading_symbol}* at ₹{live_pe_ltp:.2f}\n"
+                                        f"Stop Loss: ₹{pending_swap_sl:.2f} | Target: ₹{pending_swap_target:.2f}\n\n"
+                                        f"👉 *Would you like to SWITCH trades?* Send 'Y' to switch instantly at Market, or 'N' to ignore."
+                                    )
 
                 elif bot_state == "CE_LONG":
                     # --- CE EXIT EVALUATION ---
