@@ -346,10 +346,15 @@ class TelegramCommandListener:
                                 points = 5.0
                                 if len(parts) > 1:
                                     try:
-                                        points = max(1.0, float(parts[1]))
+                                        points = max(0.01, float(parts[1]))
                                     except ValueError:
                                         pass
                                 return "BUFFER", points
+                            elif first_word in ("LIMIT", "MAX_TRADES", "/LIMIT"):
+                                max_t = 2
+                                if len(parts) > 1 and parts[1].isdigit():
+                                    max_t = max(1, int(parts[1]))
+                                return "LIMIT", max_t
                             elif first_word == "SL":
                                 price = 0.0
                                 if len(parts) > 1:
@@ -390,8 +395,65 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
         return None
 
 
+def send_telegram_voice_alert(message: str) -> None:
+    """Send voice alert as audio clip to Telegram if gtts is available."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        return
+        
+    msg_upper = message.upper()
+    is_event = ("ENTRY" in msg_upper or "EXIT" in msg_upper or "TARGET" in msg_upper or "STOP LOSS" in msg_upper or "TSL" in msg_upper or "SL HIT" in msg_upper or "SIGNAL ALIGNED" in msg_upper)
+    if not is_event:
+        return
+        
+    try:
+        clean_text = message.replace("*", "").replace("`", "").replace("🟢", "").replace("🔴", "").replace("🔥", "").replace("SBD_bot", "")
+        lines = [line.strip() for line in clean_text.split("\n") if line.strip()][:3]
+        voice_text = " . ".join(lines)
+        
+        from gtts import gTTS
+        import io
+        tts = gTTS(text=voice_text, lang='en', slow=False)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        
+        import urllib.request
+        boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
+        url = f"https://api.telegram.org/bot{bot_token}/sendVoice"
+        
+        body = []
+        body.append(f'--{boundary}'.encode('utf-8'))
+        body.append(f'Content-Disposition: form-data; name="chat_id"'.encode('utf-8'))
+        body.append(''.encode('utf-8'))
+        body.append(str(chat_id).encode('utf-8'))
+        body.append(f'--{boundary}'.encode('utf-8'))
+        body.append(f'Content-Disposition: form-data; name="voice"; filename="alert.ogg"'.encode('utf-8'))
+        body.append('Content-Type: audio/ogg'.encode('utf-8'))
+        body.append(''.encode('utf-8'))
+        body.append(fp.read())
+        body.append(f'--{boundary}--'.encode('utf-8'))
+        body.append(''.encode('utf-8'))
+        
+        req_body = b'\r\n'.join(body)
+        
+        req = urllib.request.Request(url, data=req_body)
+        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+        req.add_header('User-Agent', 'Mozilla/5.0')
+        
+        with urllib.request.urlopen(req, timeout=8) as response:
+            if response.status == 200:
+                logger.info("🎙️ Telegram Voice Alert sent successfully.")
+    except Exception as e:
+        logger.debug("Failed to send Telegram Voice Alert: %s", e)
+
+
 def send_mobile_alert(message: str) -> None:
     """Send mobile push notifications via Telegram Bot API or CallMeBot WhatsApp API."""
+    # Send Voice Alert to Telegram if applicable
+    send_telegram_voice_alert(message)
+
     # 1. Telegram Push Notification
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -989,6 +1051,7 @@ def build_epm_grid_and_contracts(
     spot_price: float,
     spot_open: float,
     vix_val: float,
+    buffer: float = 0.13,
 ) -> tuple[EPMMasterGrid, list[OptionContract], list[OptionContract]]:
     """Fetch option contracts, select top 3 ITM strikes for CE and PE, calculate EPM grid for all of them."""
     search_res = smart_api.searchScrip("BFO", "SENSEX")
@@ -1097,7 +1160,7 @@ def build_epm_grid_and_contracts(
         spot=spot_to_use, vix=vix_val, dte=dte_days,
         ce_ltp=ce_legs_data[0][0], ce_delta=ce_legs_data[0][1], ce_strike=ce_legs_data[0][2],
         pe_ltp=pe_legs_data[0][0], pe_delta=pe_legs_data[0][1], pe_strike=pe_legs_data[0][2],
-        buffer=0.10,
+        buffer=buffer,
         ce_legs_data=ce_legs_data,
         pe_legs_data=pe_legs_data,
         ce_expiry=str(ce_contracts[0].expiry),
@@ -1252,6 +1315,7 @@ def run_cloud_bot() -> None:
     ce_ltp = 500.0
     pe_ltp = 300.0
     grid_from_memory = False
+    current_epm_buffer = 0.13
 
     # Get Spot Price
     try:
@@ -1441,7 +1505,7 @@ def run_cloud_bot() -> None:
 
     if grid is None:
         logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot %s...", current_slot)
-        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val)
+        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer)
         ce_contract = ce_contracts[0]
         pe_contract = pe_contracts[0]
         ce_ltp = grid.ce_leg.ltp
@@ -1594,7 +1658,7 @@ def run_cloud_bot() -> None:
 
                     # 2. Re-calculate new Master Grid & Contracts for the new slot
                     logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for transitioned slot %s...", current_slot)
-                    grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val)
+                    grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer)
                     ce_contract = ce_contracts[0]
                     pe_contract = pe_contracts[0]
                     ce_ltp = grid.ce_leg.ltp
@@ -1696,9 +1760,28 @@ def run_cloud_bot() -> None:
                     logger.info("🛡️ [MODE SWITCH] Switched back to SAFE PAPER TRADING MODE via Telegram.")
                     send_mobile_alert("🛡️ *MODE SWITCHED TO PAPER TRADING*\nOrders set to safe demo simulation.")
                 elif cmd == "BUFFER":
-                    trail_buffer = remote_lots
-                    logger.info("⚙️ [TELEGRAM] Trailing buffer manually updated to %.1f points.", trail_buffer)
-                    send_mobile_alert(f"⚙️ *TRAILING BUFFER UPDATED*\n\nBuffer manually updated to *{trail_buffer:.1f} points* via Telegram.")
+                    if remote_lots < 1.0:
+                        current_epm_buffer = remote_lots
+                        logger.info("⚙️ [TELEGRAM] EPM Master Grid Buffer updated to %.2f. Recalculating EPM Grid...", current_epm_buffer)
+                        
+                        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer)
+                        ce_contract = ce_contracts[0]
+                        pe_contract = pe_contracts[0]
+                        ce_ltp = grid.ce_leg.ltp
+                        pe_ltp = grid.pe_leg.ltp
+                        dte_days = grid.dte
+                        
+                        save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
+                        msg = format_grid_notification(grid, f"🔔 *SENSEX MASTER GRID UPDATED (Buffer: {current_epm_buffer:.2f})*", spot_price, spot_open, vix_val, dte_days, current_slot)
+                        send_mobile_alert(msg)
+                    else:
+                        trail_buffer = remote_lots
+                        logger.info("⚙️ [TELEGRAM] Trailing buffer manually updated to %.1f points.", trail_buffer)
+                        send_mobile_alert(f"⚙️ *TRAILING BUFFER UPDATED*\n\nBuffer manually updated to *{trail_buffer:.1f} points* via Telegram.")
+                elif cmd == "LIMIT":
+                    max_trades_per_day = int(remote_lots)
+                    logger.info("⚙️ [TELEGRAM] Max Trades Limit manually updated to %d.", max_trades_per_day)
+                    send_mobile_alert(f"⚙️ *MAX TRADES LIMIT UPDATED*\n\nMaximum trades per day manually updated to *{max_trades_per_day} trades* via Telegram.")
                 elif cmd == "SL" and bot_state in ("CE_LONG", "PE_LONG"):
                     active_sl = remote_lots
                     logger.info("⚠️ [TELEGRAM] Stop Loss manually updated to ₹%.2f.", active_sl)
@@ -1937,9 +2020,19 @@ def run_cloud_bot() -> None:
                                         active_sl_ce = max(1.0, c_low_15m - 5.0)
                                         entry_type_str_ce = f"{current_slot} Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open"
                                     elif (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp >= recent_ce_low + 5.0):
-                                        ce_entry_signal = True
-                                        active_sl_ce = max(1.0, c_low_15m - 5.0)
-                                        entry_type_str_ce = f"{current_slot} Slot CE At/Near EPM Low Bounce (+5pt Reversal)"
+                                        swing_low_val = None
+                                        try:
+                                            candles_5m = get_current_5m_candles(smart_api, "BFO", ce_contract.symbol_token)
+                                            if candles_5m:
+                                                swing_low_val = min(float(c[3]) for c in candles_5m)
+                                        except Exception:
+                                            pass
+                                        is_near_swing_low = (swing_low_val is not None) and (live_ce_ltp <= swing_low_val + 25.0)
+                                        
+                                        if is_near_swing_low and not has_prior_breakout_ce:
+                                            ce_entry_signal = True
+                                            active_sl_ce = max(1.0, c_low_15m - 5.0)
+                                            entry_type_str_ce = f"{current_slot} Slot CE At/Near EPM Low Bounce (+5pt Reversal)"
                                         
                             elif opt_type == "PE" and not ce_entry_signal and not pe_entry_signal:
                                 pe_mfi, pe_prev_mfi, pe_prev_low = get_15m_mfi(smart_api, "BFO", pe_contract.symbol_token, period=5)
@@ -2030,9 +2123,19 @@ def run_cloud_bot() -> None:
                                         active_sl_pe = max(1.0, p_low_15m - 5.0)
                                         entry_type_str_pe = f"{current_slot} Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open"
                                     elif (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp >= recent_pe_low + 5.0):
-                                        pe_entry_signal = True
-                                        active_sl_pe = max(1.0, p_low_15m - 5.0)
-                                        entry_type_str_pe = f"{current_slot} Slot PE At/Near EPM Low Bounce (+5pt Reversal)"
+                                        swing_low_val_pe = None
+                                        try:
+                                            candles_5m = get_current_5m_candles(smart_api, "BFO", pe_contract.symbol_token)
+                                            if candles_5m:
+                                                swing_low_val_pe = min(float(c[3]) for c in candles_5m)
+                                        except Exception:
+                                            pass
+                                        is_near_swing_low_pe = (swing_low_val_pe is not None) and (live_pe_ltp <= swing_low_val_pe + 25.0)
+                                        
+                                        if is_near_swing_low_pe and not has_prior_breakout_pe:
+                                            pe_entry_signal = True
+                                            active_sl_pe = max(1.0, p_low_15m - 5.0)
+                                            entry_type_str_pe = f"{current_slot} Slot PE At/Near EPM Low Bounce (+5pt Reversal)"
                         
                         # Trigger CE Long Entry
                         if ce_entry_signal:
