@@ -922,6 +922,46 @@ def get_current_1m_candles(smart_api: Any, exchange: str, symbol_token: str, cou
     return []
 
 
+def check_prior_breakouts(smart_api: Any, token: str) -> bool:
+    """Fetch 5-minute candles to check if prior breakouts from the swing low have already happened."""
+    candles = get_current_5m_candles(smart_api, "BFO", token)
+    if not candles or len(candles) < 2:
+        return False
+    breakout_candles_count = 0
+    for c in candles:
+        c_open = float(c[1])
+        c_close = float(c[4])
+        if c_close - c_open >= 30.0:
+            breakout_candles_count += 1
+    return breakout_candles_count >= 2
+
+
+def check_5m_breakout_and_reversal(smart_api: Any, token: str, live_ltp: float) -> tuple[bool, float | None]:
+    """Check if there was a 5-minute green breakout candle and price is now testing/bouncing from initial swing low reversing up to open."""
+    candles = get_current_5m_candles(smart_api, "BFO", token)
+    if not candles or len(candles) < 2:
+        return False, None
+    
+    lows = [float(c[3]) for c in candles]
+    swing_low = min(lows)
+    
+    has_5m_green_breakout = False
+    breakout_open_price = None
+    for c in candles[-3:]:
+        c_open = float(c[1])
+        c_close = float(c[4])
+        if c_close > c_open + 5.0:
+            has_5m_green_breakout = True
+            breakout_open_price = c_open
+            break
+            
+    if has_5m_green_breakout and breakout_open_price:
+        if (swing_low <= live_ltp <= swing_low + 25.0) or (live_ltp >= breakout_open_price):
+            if live_ltp >= breakout_open_price:
+                return True, swing_low
+    return False, None
+
+
 def load_delta_map() -> dict[str, dict[str, Any]]:
     """Load official Angel One Script Master metadata map from local files if available."""
     for path in ("delta_map.json", "../../delta_map.json", "0_sensex_options_delta_1786941098090.json", "../../0_sensex_options_delta_1786941098090.json"):
@@ -1531,7 +1571,7 @@ def run_cloud_bot() -> None:
                 checked_at = datetime.now(IST)
                 loop_counter += 1
 
-                # Check for slot transition (e.g. from 9:15 AM to 9:45 AM or 9:45 AM to 12:15 PM)
+                # Check for slot transition (always transition and notify irrespective of positions, as requested)
                 now_slot = get_current_time_slot()
                 if now_slot != current_slot:
                     sys.stdout.write("\n")
@@ -1567,7 +1607,7 @@ def run_cloud_bot() -> None:
                     else:
                         save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
 
-                    # Send Telegram Notification for new slot's EPM
+                    # Send Telegram Notification for new slot's EPM (make sure current_slot is explicitly passed)
                     logger.info("=========================================================================")
                     logger.info("SENSEX CLOUD BOT - MASTER GRID TRANSITIONED")
                     logger.info("Spot LTP: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
@@ -1581,7 +1621,7 @@ def run_cloud_bot() -> None:
                                     leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
                     logger.info("=========================================================================")
 
-                    msg = format_grid_notification(grid, f"🔔 *SENSEX MASTER GRID UPDATED ({current_slot} Slot)*", spot_price, spot_open, vix_val, dte_days)
+                    msg = format_grid_notification(grid, f"🔔 *SENSEX MASTER GRID UPDATED ({current_slot} Slot)*", spot_price, spot_open, vix_val, dte_days, current_slot)
                     send_mobile_alert(msg)
 
                     # Log to Excel
@@ -1606,7 +1646,7 @@ def run_cloud_bot() -> None:
                     previous_ce_ltp = ce_ltp
                     previous_pe_ltp = pe_ltp
 
-                    # Update WebSocket Feed subscription for the new contracts
+                    # Update WebSocket Feed subscription for the new contracts and active contract
                     if ws_feed:
                         try:
                             logger.info("🔌 Closing old WebSocket feed and restarting with new slot tokens...")
@@ -1622,7 +1662,10 @@ def run_cloud_bot() -> None:
                                 api_key=os.environ["ANGEL_ONE_API_KEY"],
                                 auth_token=smart_api.auth_token
                             )
-                            ws_feed.start(["99919000", ce_contract.symbol_token, pe_contract.symbol_token])
+                            tokens_to_subscribe = ["99919000", ce_contract.symbol_token, pe_contract.symbol_token]
+                            if bot_state != "IDLE" and active_contract:
+                                tokens_to_subscribe.append(active_contract.symbol_token)
+                            ws_feed.start(tokens_to_subscribe)
                             logger.info("⚡ Background WebSocket Feed re-initialized for slot %s.", current_slot)
                         except Exception as e:
                             logger.warning("Could not re-initialize WebSocket Feed: %s", e)
@@ -1703,8 +1746,24 @@ def run_cloud_bot() -> None:
                     except Exception:
                         live_pe_ltp = None
 
+                # Fetch active position LTP directly to isolate active position tracking from slot transitions
+                live_active_ltp = None
+                if bot_state in ("CE_LONG", "PE_LONG") and active_contract:
+                    if ws_feed and ws_feed.is_connected:
+                        live_active_ltp = ws_feed.prices.get(active_contract.symbol_token)
+                    if live_active_ltp is None:
+                        try:
+                            live_active_res = smart_api.ltpData("BFO", active_contract.trading_symbol, active_contract.symbol_token)
+                            live_active_ltp = float(live_active_res["data"]["ltp"]) if isinstance(live_active_res, dict) and live_active_res.get("data") else None
+                        except Exception:
+                            live_active_ltp = None
+
                 if live_spot is None or live_ce_ltp is None or live_pe_ltp is None:
                     logger.warning("⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.")
+                    continue
+
+                if bot_state in ("CE_LONG", "PE_LONG") and live_active_ltp is None:
+                    logger.warning("⚠️ [API DELAY] Active trade LTP returned None. Skipping loop iteration to prevent stale trades.")
                     continue
 
                 # 1. Update Recent Lows while IDLE
@@ -1768,11 +1827,25 @@ def run_cloud_bot() -> None:
                             logger.debug("[SIGNAL EVAL] Slot: %s | CE dist: %.2f (Near 35pt: %s) | PE dist: %.2f (Near 35pt: %s)",
                                          current_slot, ce_min_dist, ce_in_35_range, pe_min_dist, pe_in_35_range)
                         
-                        # First Slot check: Determine which Option Type is nearer to EPM Low to observe first
-                        if current_slot == "09:15" and pe_min_dist < ce_min_dist:
-                            check_order = ["PE", "CE"]
+                        # First Slot check: Determine which Option Type is nearer to EPM Low to observe first.
+                        # Prefer watching the side that is below EPM low as requested (e.g. CE is below EPM Low, watch CE).
+                        if current_slot == "09:15":
+                            ce_is_below = (live_ce_ltp < ce_low_level)
+                            pe_is_below = (live_pe_ltp < pe_low_level)
+                            if ce_is_below and not pe_is_below:
+                                check_order = ["CE", "PE"]
+                            elif pe_is_below and not ce_is_below:
+                                check_order = ["PE", "CE"]
+                            else:
+                                if pe_min_dist < ce_min_dist:
+                                    check_order = ["PE", "CE"]
+                                else:
+                                    check_order = ["CE", "PE"]
                         else:
-                            check_order = ["CE", "PE"]
+                            if pe_min_dist < ce_min_dist:
+                                check_order = ["PE", "CE"]
+                            else:
+                                check_order = ["CE", "PE"]
                         
                         ce_entry_signal = False
                         active_sl_ce = grid.ce_leg.sl_auto
@@ -1810,13 +1883,56 @@ def run_cloud_bot() -> None:
                                     active_sl_ce = max(1.0, c_low_15m - 5.0)
                                     entry_type_str_ce = "Range Breakout Bounce" if is_range_move_ce else ("MFI=0 and Open Bounce" if is_mfi_zero_and_bounce_ce else "Retest Post-Correction Bounce")
                                 elif current_slot == "09:15":
-                                    if ce_in_35_range:
-                                        if live_ce_ltp >= c_open_15m:
-                                            ce_entry_signal = True
-                                            active_sl_ce = max(1.0, c_low_15m - 5.0)
-                                            entry_type_str_ce = "First Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open"
+                                    # Avoid entry on 9:15 candle if Entry Price is not within +/-35 of EPM Low
+                                    ce_entry_in_35_range = (ce_low_level - 35.0 <= live_ce_ltp <= ce_low_level + 35.0)
+                                    
+                                    # Or condition for Price Action: 15m Candle Price Bounce to Open OR 5m green breakout and pullback reversal
+                                    is_15m_bounce = (live_ce_ltp >= c_open_15m)
+                                    is_5m_breakout_reversal = False
+                                    pa_sl_ce = None
+                                    try:
+                                        is_5m_breakout_reversal, swing_low_ce = check_5m_breakout_and_reversal(smart_api, ce_contract.symbol_token, live_ce_ltp)
+                                        if is_5m_breakout_reversal and swing_low_ce:
+                                            pa_sl_ce = max(1.0, swing_low_ce - 5.0)
+                                    except Exception as e:
+                                        logger.warning("Error checking 5m PA: %s", e)
+                                        
+                                    if ce_entry_in_35_range and (is_15m_bounce or is_5m_breakout_reversal):
+                                        # DIAGNOSTIC LOG FOR CE 9:15 ENTRY CONDITIONS
+                                        logger.info("🔍 [DIAGNOSTIC CE 9:15] live_ce_ltp: %.2f, c_open_15m: %.2f, 15m_bounce: %s, 5m_breakout: %s",
+                                                    live_ce_ltp, c_open_15m, is_15m_bounce, is_5m_breakout_reversal)
+                                        ce_entry_signal = True
+                                        
+                                        if is_5m_breakout_reversal and pa_sl_ce:
+                                            active_sl_ce = pa_sl_ce
+                                        else:
+                                            # If Entry is far away than Open price, SL should be same 15 points or -5 from recent 1 min low
+                                            is_far_from_open = (live_ce_ltp - c_open_15m > 35.0)
+                                            if is_far_from_open:
+                                                recent_1m_low = None
+                                                try:
+                                                    candles_1m = get_current_1m_candles(smart_api, "BFO", ce_contract.symbol_token, count_mins=3)
+                                                    if candles_1m:
+                                                        recent_1m_low = float(candles_1m[-1][3])
+                                                except Exception as e:
+                                                    logger.warning("Error getting 1m low: %s", e)
+                                                
+                                                if recent_1m_low:
+                                                    active_sl_ce = max(live_ce_ltp - 15.0, recent_1m_low - 5.0)
+                                                else:
+                                                    active_sl_ce = live_ce_ltp - 15.0
+                                            else:
+                                                active_sl_ce = max(1.0, c_low_15m - 5.0)
+                                        entry_type_str_ce = "First Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open" if is_15m_bounce else "First Slot CE 5m PA Breakout & Pullback Reversal"
                                 else:
-                                    if ce_in_35_range and live_ce_ltp >= c_open_15m:
+                                    # Subsequent slot checks: Enter only if NO prior breakout has happened
+                                    has_prior_breakout_ce = False
+                                    try:
+                                        has_prior_breakout_ce = check_prior_breakouts(smart_api, ce_contract.symbol_token)
+                                    except Exception as e:
+                                        logger.warning("Error checking CE prior breakouts: %s", e)
+                                        
+                                    if ce_in_35_range and live_ce_ltp >= c_open_15m and not has_prior_breakout_ce:
                                         ce_entry_signal = True
                                         active_sl_ce = max(1.0, c_low_15m - 5.0)
                                         entry_type_str_ce = f"{current_slot} Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open"
@@ -1852,11 +1968,47 @@ def run_cloud_bot() -> None:
                                     active_sl_pe = max(1.0, p_low_15m - 5.0)
                                     entry_type_str_pe = "Range Breakout Bounce" if is_range_move_pe else ("MFI=0 and Open Bounce" if is_mfi_zero_and_bounce_pe else "Retest Post-Correction Bounce")
                                 elif current_slot == "09:15":
-                                    if pe_in_35_range:
-                                        if live_pe_ltp >= p_open_15m:
-                                            pe_entry_signal = True
-                                            active_sl_pe = max(1.0, p_low_15m - 5.0)
-                                            entry_type_str_pe = "First Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open"
+                                    # Avoid entry on 9:15 candle if Entry Price is not within +/-35 of EPM Low
+                                    pe_entry_in_35_range = (pe_low_level - 35.0 <= live_pe_ltp <= pe_low_level + 35.0)
+                                    
+                                    # Or condition for Price Action: 15m Candle Price Bounce to Open OR 5m green breakout and pullback reversal
+                                    is_15m_bounce_pe = (live_pe_ltp >= p_open_15m)
+                                    is_5m_breakout_reversal_pe = False
+                                    pa_sl_pe = None
+                                    try:
+                                        is_5m_breakout_reversal_pe, swing_low_pe = check_5m_breakout_and_reversal(smart_api, pe_contract.symbol_token, live_pe_ltp)
+                                        if is_5m_breakout_reversal_pe and swing_low_pe:
+                                            pa_sl_pe = max(1.0, swing_low_pe - 5.0)
+                                    except Exception as e:
+                                        logger.warning("Error checking 5m PE PA: %s", e)
+                                        
+                                    if pe_entry_in_35_range and (is_15m_bounce_pe or is_5m_breakout_reversal_pe):
+                                        # DIAGNOSTIC LOG FOR PE 9:15 ENTRY CONDITIONS
+                                        logger.info("🔍 [DIAGNOSTIC PE 9:15] live_pe_ltp: %.2f, p_open_15m: %.2f, 15m_bounce: %s, 5m_breakout: %s",
+                                                    live_pe_ltp, p_open_15m, is_15m_bounce_pe, is_5m_breakout_reversal_pe)
+                                        pe_entry_signal = True
+                                        
+                                        if is_5m_breakout_reversal_pe and pa_sl_pe:
+                                            active_sl_pe = pa_sl_pe
+                                        else:
+                                            # If Entry is far away than Open price, SL should be same 15 points or -5 from recent 1 min low
+                                            is_far_from_open = (live_pe_ltp - p_open_15m > 35.0)
+                                            if is_far_from_open:
+                                                recent_1m_low = None
+                                                try:
+                                                    candles_1m = get_current_1m_candles(smart_api, "BFO", pe_contract.symbol_token, count_mins=3)
+                                                    if candles_1m:
+                                                        recent_1m_low = float(candles_1m[-1][3])
+                                                except Exception as e:
+                                                    logger.warning("Error getting 1m low: %s", e)
+                                                
+                                                if recent_1m_low:
+                                                    active_sl_pe = max(live_pe_ltp - 15.0, recent_1m_low - 5.0)
+                                                else:
+                                                    active_sl_pe = live_pe_ltp - 15.0
+                                            else:
+                                                active_sl_pe = max(1.0, p_low_15m - 5.0)
+                                        entry_type_str_pe = "First Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open" if is_15m_bounce_pe else "First Slot PE 5m PA Breakout & Pullback Reversal"
                                 else:
                                     p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
                                     if p_open_15m is None:
@@ -1866,7 +2018,14 @@ def run_cloud_bot() -> None:
                                     else:
                                         p_low_15m = min(p_low_15m, recent_pe_low)
                                         
-                                    if pe_in_35_range and live_pe_ltp >= p_open_15m:
+                                    # Subsequent slot checks: Enter only if NO prior breakout has happened
+                                    has_prior_breakout_pe = False
+                                    try:
+                                        has_prior_breakout_pe = check_prior_breakouts(smart_api, pe_contract.symbol_token)
+                                    except Exception as e:
+                                        logger.warning("Error checking PE prior breakouts: %s", e)
+                                        
+                                    if pe_in_35_range and live_pe_ltp >= p_open_15m and not has_prior_breakout_pe:
                                         pe_entry_signal = True
                                         active_sl_pe = max(1.0, p_low_15m - 5.0)
                                         entry_type_str_pe = f"{current_slot} Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open"
@@ -1880,7 +2039,9 @@ def run_cloud_bot() -> None:
                             bot_state = "CE_LONG"
                             active_contract = ce_contract
                             active_entry_price = live_ce_ltp
-                            active_target = grid.ce_leg.practical_target
+                            # Ensure target is dynamically calculated relative to entry price to avoid inversion
+                            target_offset_ce = max(15.0, grid.ce_leg.practical_target - grid.ce_leg.ltp)
+                            active_target = active_entry_price + target_offset_ce
                             active_sl = active_sl_ce
                             entry_time = datetime.now(IST)
                             qty_to_trade = lot_size * 20
@@ -1889,6 +2050,7 @@ def run_cloud_bot() -> None:
                             peak_price = active_entry_price
                             offloaded = False
                             
+                            sys.stdout.write("\n")
                             logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_ce_ltp, entry_type_str_ce, active_sl, active_target)
                             send_mobile_alert(f"🟢 *CE ENTRY SIGNAL ALIGNED ({entry_type_str_ce})*\n\n"
                                               f"Contract: *{active_contract.trading_symbol}*\n"
@@ -1918,7 +2080,9 @@ def run_cloud_bot() -> None:
                             bot_state = "PE_LONG"
                             active_contract = pe_contract
                             active_entry_price = live_pe_ltp
-                            active_target = grid.pe_leg.practical_target
+                            # Ensure target is dynamically calculated relative to entry price to avoid inversion
+                            target_offset_pe = max(15.0, grid.pe_leg.practical_target - grid.pe_leg.ltp)
+                            active_target = active_entry_price + target_offset_pe
                             active_sl = active_sl_pe
                             entry_time = datetime.now(IST)
                             qty_to_trade = lot_size * 20
@@ -1927,6 +2091,7 @@ def run_cloud_bot() -> None:
                             peak_price = active_entry_price
                             offloaded = False
                             
+                            sys.stdout.write("\n")
                             logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
                             send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
                                               f"Contract: *{active_contract.trading_symbol}*\n"
@@ -1953,6 +2118,9 @@ def run_cloud_bot() -> None:
 
                 elif bot_state == "CE_LONG":
                     # --- CE EXIT EVALUATION ---
+                    # For active position evaluation, use the actual active contract's LTP
+                    live_ce_ltp = live_active_ltp
+                    
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
                     
@@ -2044,6 +2212,8 @@ def run_cloud_bot() -> None:
                         recent_pe_low = live_pe_ltp
 
                     # 3. Standard Practical Target exit or MFI Target Exit (Only if trailing stop is NOT active)
+                    if bot_state != "CE_LONG" or active_contract is None:
+                        continue
                     c_mfi_val, c_mfi_prev_val, _ = get_15m_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
                     is_mfi_tp_hit = (c_mfi_val >= 99.0) or (live_ce_ltp >= active_entry_price + 100.0 and c_mfi_val < c_mfi_prev_val)
                     
@@ -2080,6 +2250,9 @@ def run_cloud_bot() -> None:
 
                 elif bot_state == "PE_LONG":
                     # --- PE EXIT EVALUATION ---
+                    # For active position evaluation, use the actual active contract's LTP
+                    live_pe_ltp = live_active_ltp
+                    
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
                     
@@ -2171,6 +2344,8 @@ def run_cloud_bot() -> None:
                         recent_pe_low = live_pe_ltp
 
                     # 3. Standard Practical Target exit or MFI Target Exit (Only if trailing stop is NOT active)
+                    if bot_state != "PE_LONG" or active_contract is None:
+                        continue
                     p_mfi_val, p_mfi_prev_val, _ = get_15m_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
                     is_mfi_tp_hit_pe = (p_mfi_val >= 99.0) or (live_pe_ltp >= active_entry_price + 100.0 and p_mfi_val < p_mfi_prev_val)
                     
