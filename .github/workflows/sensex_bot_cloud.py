@@ -2259,6 +2259,9 @@ def run_cloud_bot() -> None:
                                 # 30-min Dual MFI Reversal Option
                                 is_30m_mfi_option_ce = (mfi5_30m > prev_mfi5_30m) and (mfi14_30m <= 35.0 and mfi14_30m >= prev_mfi14_30m) and is_bounce_open_ce
 
+                                # Re-Entry Condition: After exit from riding a trend, if MFI 14 and MFI 5 bounce up from a dip
+                                is_reentry_ce = (mfi14_15m >= prev_mfi14_15m and mfi14_15m > 20.0) and (mfi5_15m > prev_mfi5_15m) and is_bounce_open_ce
+
                                 # Regime 1 CE: Spot LTP trading above Weekly Open
                                 if live_spot >= weekly_open:
                                     if is_mfi_pattern_ce and is_higher_low_ce and is_bounce_open_ce:
@@ -2269,6 +2272,10 @@ def run_cloud_bot() -> None:
                                         ce_entry_signal = True
                                         active_sl_ce = max(1.0, c_low_15m - 15.0)
                                         entry_type_str_ce = f"CE 30m Dual MFI Reversal Option (MFI5={mfi5_30m:.1f}, MFI14={mfi14_30m:.1f} | SL-15)"
+                                    elif is_reentry_ce:
+                                        ce_entry_signal = True
+                                        active_sl_ce = max(1.0, c_low_15m - 15.0)
+                                        entry_type_str_ce = f"CE Trend Continuation Re-Entry (MFI14={mfi14_15m:.1f}, MFI5={mfi5_15m:.1f} Bouncing | SL-15)"
                                 # Regime 2 CE: Spot jumped or corrected massively
                                 else:
                                     is_1m_mfi_bounce_ce = (mfi5_1m <= 1.0 or mfi14_1m <= 10.0 or mfi5_1m > prev_mfi5_1m)
@@ -2281,6 +2288,10 @@ def run_cloud_bot() -> None:
                                         ce_entry_signal = True
                                         active_sl_ce = max(1.0, c_low_15m - 15.0)
                                         entry_type_str_ce = f"CE 30m Dual MFI Reversal Option (MFI5={mfi5_30m:.1f}, MFI14={mfi14_30m:.1f} | SL-15)"
+                                    elif is_reentry_ce:
+                                        ce_entry_signal = True
+                                        active_sl_ce = max(1.0, c_low_15m - 15.0)
+                                        entry_type_str_ce = f"CE Trend Continuation Re-Entry (MFI14={mfi14_15m:.1f}, MFI5={mfi5_15m:.1f} Bouncing | SL-15)"
 
                             elif opt_type == "PE" and not ce_entry_signal and not pe_entry_signal:
                                 p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
@@ -2331,6 +2342,9 @@ def run_cloud_bot() -> None:
                                 # 30-min Dual MFI Reversal Option
                                 is_30m_mfi_option_pe = (mfi5_30m_pe > prev_mfi5_30m_pe) and (mfi14_30m_pe <= 35.0 and mfi14_30m_pe >= prev_mfi14_30m_pe) and is_bounce_open_pe
                                 
+                                # Re-Entry Condition: After exit from riding a trend, if MFI 14 and MFI 5 bounce up from a dip
+                                is_reentry_pe = (mfi14_15m_pe >= prev_mfi14_15m_pe and mfi14_15m_pe > 20.0) and (mfi5_15m_pe > prev_mfi5_15m_pe) and is_bounce_open_pe
+
                                 # Regime 1 PE: Spot LTP trading below Weekly Open
                                 if live_spot <= weekly_open:
                                     if is_mfi_pattern_pe and is_higher_low_pe and is_bounce_open_pe:
@@ -2341,6 +2355,10 @@ def run_cloud_bot() -> None:
                                         pe_entry_signal = True
                                         active_sl_pe = max(1.0, p_low_15m - 15.0)
                                         entry_type_str_pe = f"PE 30m Dual MFI Reversal Option (MFI5={mfi5_30m_pe:.1f}, MFI14={mfi14_30m_pe:.1f} | SL-15)"
+                                    elif is_reentry_pe:
+                                        pe_entry_signal = True
+                                        active_sl_pe = max(1.0, p_low_15m - 15.0)
+                                        entry_type_str_pe = f"PE Trend Continuation Re-Entry (MFI14={mfi14_15m_pe:.1f}, MFI5={mfi5_15m_pe:.1f} Bouncing | SL-15)"
                                 # Regime 2 PE: Spot dropped or jumped massively
                                 else:
                                     is_1m_mfi_bounce_pe = (mfi5_1m_pe <= 1.0 or mfi14_1m_pe <= 10.0 or mfi5_1m_pe > prev_mfi5_1m_pe)
@@ -2353,6 +2371,10 @@ def run_cloud_bot() -> None:
                                         pe_entry_signal = True
                                         active_sl_pe = max(1.0, p_low_15m - 15.0)
                                         entry_type_str_pe = f"PE 30m Dual MFI Reversal Option (MFI5={mfi5_30m_pe:.1f}, MFI14={mfi14_30m_pe:.1f} | SL-15)"
+                                    elif is_reentry_pe:
+                                        pe_entry_signal = True
+                                        active_sl_pe = max(1.0, p_low_15m - 15.0)
+                                        entry_type_str_pe = f"PE Trend Continuation Re-Entry (MFI14={mfi14_15m_pe:.1f}, MFI5={mfi5_15m_pe:.1f} Bouncing | SL-15)"
                         
                         # Trigger CE Long Entry
                         if ce_entry_signal:
@@ -2469,28 +2491,30 @@ def run_cloud_bot() -> None:
                     peak_price = max(peak_price, live_ce_ltp)
                     favorable_gain_ce = peak_price - active_entry_price
                     
-                    # Dynamic Step-Up Trailing SL
-                    if favorable_gain_ce >= 20.0 and favorable_gain_ce < 35.0:
+                    # Clean Trailing SL: Move to Cost Price on 20+ points move
+                    if favorable_gain_ce >= 20.0:
                         if active_sl < active_entry_price:
                             active_sl = active_entry_price
                             logger.info("🔥 [COST PRICE TRAILING ACTIVATED] CE moved +%.2f pts in favor. SL set to Cost Price ₹%.2f.", favorable_gain_ce, active_sl)
                             send_mobile_alert(f"🔥 *COST PRICE TRAILING ACTIVATED*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to Cost Price: *₹{active_sl:.2f}*")
-                    elif favorable_gain_ce >= 35.0 and favorable_gain_ce < 50.0:
-                        if active_sl < active_entry_price + 20.0:
-                            active_sl = active_entry_price + 20.0
-                            logger.info("📈 [STEP-UP TRAILING (+35pt Move)] CE peak reached ₹%.2f. SL raised to ₹%.2f (+20pt Profit Locked).", peak_price, active_sl)
-                            send_mobile_alert(f"📈 *STEP-UP TRAILING (+35pt Move)*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to: *₹{active_sl:.2f}* (+20pt Profit Locked)")
-                    elif favorable_gain_ce >= 50.0:
-                        new_sl = max(active_sl, peak_price - 15.0)
-                        if new_sl > active_sl:
-                            active_sl = new_sl
-                            logger.info("🚀 [DYNAMIC RIDE TRAILING (+50pt+ Big Move)] CE peak rose to ₹%.2f. Dynamic TSL: ₹%.2f.", peak_price, active_sl)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
                     
                     elapsed_mins = (datetime.now(IST) - entry_time).total_seconds() / 60.0
                     is_surge_window = (elapsed_mins <= 60.0)  # Within 1-2 30-min candles (60 mins)
+                    
+                    # Check for Dual MFI Exit conditions
+                    mfis_15m_ce, prev_mfis_15m_ce = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
+                    curr_mfi5_ce = mfis_15m_ce.get(5, 50.0)
+                    curr_mfi14_ce = mfis_15m_ce.get(14, 50.0)
+                    prev_mfi5_ce = prev_mfis_15m_ce.get(5, 50.0)
+                    prev_mfi14_ce = prev_mfis_15m_ce.get(14, 50.0)
+
+                    is_overbought_mfi14_fall_ce = (curr_mfi5_ce >= 95.0 or prev_mfi5_ce >= 95.0) and (curr_mfi14_ce < prev_mfi14_ce)
+                    is_dual_mfi_falling_ce = (curr_mfi5_ce < prev_mfi5_ce) and (curr_mfi14_ce < prev_mfi14_ce) and (favorable_gain_ce >= 15.0)
+
+                    is_mfi_exit_triggered_ce = is_overbought_mfi14_fall_ce or is_dual_mfi_falling_ce
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_ce_ltp >= surge_target_price)
@@ -2631,28 +2655,30 @@ def run_cloud_bot() -> None:
                     peak_price = max(peak_price, live_pe_ltp)
                     favorable_gain_pe = peak_price - active_entry_price
                     
-                    # Dynamic Step-Up Trailing SL
-                    if favorable_gain_pe >= 20.0 and favorable_gain_pe < 35.0:
+                    # Clean Trailing SL: Move to Cost Price on 20+ points move
+                    if favorable_gain_pe >= 20.0:
                         if active_sl < active_entry_price:
                             active_sl = active_entry_price
                             logger.info("🔥 [COST PRICE TRAILING ACTIVATED] PE moved +%.2f pts in favor. SL set to Cost Price ₹%.2f.", favorable_gain_pe, active_sl)
                             send_mobile_alert(f"🔥 *COST PRICE TRAILING ACTIVATED*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to Cost Price: *₹{active_sl:.2f}*")
-                    elif favorable_gain_pe >= 35.0 and favorable_gain_pe < 50.0:
-                        if active_sl < active_entry_price + 20.0:
-                            active_sl = active_entry_price + 20.0
-                            logger.info("📈 [STEP-UP TRAILING (+35pt Move)] PE peak reached ₹%.2f. SL raised to ₹%.2f (+20pt Profit Locked).", peak_price, active_sl)
-                            send_mobile_alert(f"📈 *STEP-UP TRAILING (+35pt Move)*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to: *₹{active_sl:.2f}* (+20pt Profit Locked)")
-                    elif favorable_gain_pe >= 50.0:
-                        new_sl = max(active_sl, peak_price - 15.0)
-                        if new_sl > active_sl:
-                            active_sl = new_sl
-                            logger.info("🚀 [DYNAMIC RIDE TRAILING (+50pt+ Big Move)] PE peak rose to ₹%.2f. Dynamic TSL: ₹%.2f.", peak_price, active_sl)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
                     
                     elapsed_mins = (datetime.now(IST) - entry_time).total_seconds() / 60.0
                     is_surge_window = (elapsed_mins <= 60.0)  # Within 1-2 30-min candles (60 mins)
+                    
+                    # Check for Dual MFI Exit conditions
+                    mfis_15m_pe_act, prev_mfis_15m_pe_act = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
+                    curr_mfi5_pe = mfis_15m_pe_act.get(5, 50.0)
+                    curr_mfi14_pe = mfis_15m_pe_act.get(14, 50.0)
+                    prev_mfi5_pe = prev_mfis_15m_pe_act.get(5, 50.0)
+                    prev_mfi14_pe = prev_mfis_15m_pe_act.get(14, 50.0)
+
+                    is_overbought_mfi14_fall_pe = (curr_mfi5_pe >= 95.0 or prev_mfi5_pe >= 95.0) and (curr_mfi14_pe < prev_mfi14_pe)
+                    is_dual_mfi_falling_pe = (curr_mfi5_pe < prev_mfi5_pe) and (curr_mfi14_pe < prev_mfi14_pe) and (favorable_gain_pe >= 15.0)
+
+                    is_mfi_exit_triggered_pe = is_overbought_mfi14_fall_pe or is_dual_mfi_falling_pe
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_pe_ltp >= surge_target_price)
