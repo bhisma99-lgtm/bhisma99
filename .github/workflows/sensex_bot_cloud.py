@@ -407,7 +407,7 @@ def send_telegram_voice_alert(message: str) -> None:
         return
         
     msg_upper = message.upper()
-    is_event = ("ENTRY" in msg_upper or "EXIT" in msg_upper or "TARGET" in msg_upper or "STOP LOSS" in msg_upper or "TSL" in msg_upper or "SL HIT" in msg_upper or "SIGNAL ALIGNED" in msg_upper)
+    is_event = ("ENTRY" in msg_upper or "EXIT" in msg_upper or "TARGET" in msg_upper or "STOP LOSS" in msg_upper or "TSL" in msg_upper or "SL HIT" in msg_upper or "SIGNAL" in msg_upper or "MFI" in msg_upper or "GRID" in msg_upper or "SWAP" in msg_upper or "BREAKOUT" in msg_upper)
     if not is_event:
         return
         
@@ -416,7 +416,12 @@ def send_telegram_voice_alert(message: str) -> None:
         lines = [line.strip() for line in clean_text.split("\n") if line.strip()][:3]
         voice_text = " . ".join(lines)
         
-        from gtts import gTTS
+        try:
+            from gtts import gTTS
+        except ImportError:
+            logger.warning("⚠️ gTTS module not installed. Run 'pip install gtts' to enable Telegram Voice Alerts.")
+            return
+
         import io
         tts = gTTS(text=voice_text, lang='en', slow=False)
         fp = io.BytesIO()
@@ -450,7 +455,7 @@ def send_telegram_voice_alert(message: str) -> None:
             if response.status == 200:
                 logger.info("🎙️ Telegram Voice Alert sent successfully.")
     except Exception as e:
-        logger.debug("Failed to send Telegram Voice Alert: %s", e)
+        logger.warning("Failed to send Telegram Voice Alert: %s", e)
 
 
 def send_mobile_alert(message: str) -> None:
@@ -2062,9 +2067,9 @@ def run_cloud_bot() -> None:
                         recent_ce_low = live_ce_ltp
                         recent_pe_low = live_pe_ltp
 
-                # 3. State Machine Signal Evaluation (Always run to analyze and alert signals, but only execute trade automatically if IDLE)
-                if True:
-                    if bot_state == "IDLE" and trades_completed >= max_trades_per_day:
+                # 3. State Machine Signal Evaluation (Evaluate entries when IDLE, evaluate exits when in active trade)
+                if bot_state == "IDLE":
+                    if trades_completed >= max_trades_per_day:
                         pass
                     else:
                         now_time = datetime.now(IST).time()
