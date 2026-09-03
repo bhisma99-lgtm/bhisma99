@@ -454,7 +454,7 @@ def send_telegram_voice_alert(message: str) -> None:
 
 
 def send_mobile_alert(message: str) -> None:
-    """Send mobile push notifications via Telegram Bot API or CallMeBot WhatsApp API."""
+    """Send mobile push notifications via Telegram Bot API or CallMeBot WhatsApp API with automatic fallback."""
     # Send Voice Alert to Telegram if applicable
     send_telegram_voice_alert(message)
 
@@ -471,7 +471,17 @@ def send_mobile_alert(message: str) -> None:
                 if response.status == 200:
                     logger.info("📱 Telegram push notification sent successfully.")
         except Exception as e:
-            logger.warning("Failed to send Telegram alert: %s", e)
+            logger.warning("Failed to send Telegram Markdown alert, retrying plain text: %s", e)
+            try:
+                # Retry without Markdown formatting so syntax errors never prevent notification delivery
+                clean_msg = message.replace("*", "").replace("`", "")
+                payload_plain = urllib.parse.urlencode({"chat_id": chat_id, "text": clean_msg}).encode("utf-8")
+                req_plain = urllib.request.Request(url, data=payload_plain, headers={"Content-Type": "application/x-www-form-urlencoded"})
+                with urllib.request.urlopen(req_plain, timeout=5) as resp_plain:
+                    if resp_plain.status == 200:
+                        logger.info("📱 Telegram plain text notification sent successfully.")
+            except Exception as e2:
+                logger.warning("Failed to send Telegram plain text alert: %s", e2)
 
     # 2. WhatsApp Notification via CallMeBot API
     wa_phone = os.environ.get("WHATSAPP_PHONE")
@@ -798,6 +808,98 @@ def get_15m_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 
     except Exception as e:
         logger.debug("Error calculating 15m MFI: %s", e)
     return 50.0, 50.0, None
+
+
+def get_1h_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 5) -> tuple[float, float]:
+    """Calculate Money Flow Index (MFI) on 1-hour timeframe.
+    Returns (curr_mfi_1h, prev_mfi_1h).
+    """
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(hours=period + 10)
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "ONE_HOUR",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if len(candles) >= period + 1:
+                typical_prices = []
+                volumes = []
+                for c in candles:
+                    if len(c) >= 6:
+                        h, l, cl, v = float(c[2]), float(c[3]), float(c[4]), float(c[5])
+                        typical_prices.append((h + l + cl) / 3.0)
+                        volumes.append(v if v > 0 else 1.0)
+
+                if len(typical_prices) >= period + 1:
+                    def calc_mfi_at(end_idx):
+                        pos_mf = 0.0
+                        neg_mf = 0.0
+                        for i in range(end_idx - period + 1, end_idx + 1):
+                            raw_mf = typical_prices[i] * volumes[i]
+                            if typical_prices[i] > typical_prices[i - 1]:
+                                pos_mf += raw_mf
+                            elif typical_prices[i] < typical_prices[i - 1]:
+                                neg_mf += raw_mf
+                        if pos_mf == 0.0:
+                            return 0.0
+                        if neg_mf == 0.0:
+                            return 100.0
+                        mfr = pos_mf / neg_mf
+                        return 100.0 - (100.0 / (1.0 + mfr))
+
+                    curr_mfi = calc_mfi_at(len(typical_prices) - 1)
+                    prev_mfi = calc_mfi_at(len(typical_prices) - 2)
+                    return curr_mfi, prev_mfi
+    except Exception as e:
+        logger.debug("Error calculating 1h MFI: %s", e)
+    return 50.0, 50.0
+
+
+def get_3m_bollinger_bands(smart_api: Any, exchange: str, symbol_token: str, period: int = 20, std_dev_mult: float = 2.0) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None, float | None, float | None]:
+    """Fetch recent 3-minute candles and calculate Bollinger Bands (20 SMA, +/- 2 StdDev).
+    Returns (middle_band, upper_band, lower_band, c_open, c_low, c_close, prev_c_close, swing_low_3m).
+    """
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(minutes=3 * (period + 10))
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "THREE_MINUTE",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if len(candles) >= period:
+                closes = [float(c[4]) for c in candles[-period:]]
+                c_open = float(candles[-1][1])
+                c_low = float(candles[-1][3])
+                c_close = float(candles[-1][4])
+                
+                prev_c_close = float(candles[-2][4]) if len(candles) >= 2 else c_close
+                lows_3m = [float(c[3]) for c in candles[-10:]]
+                swing_low_3m = min(lows_3m) if lows_3m else c_low
+
+                mean = sum(closes) / float(period)
+                variance = sum((x - mean) ** 2 for x in closes) / float(period)
+                std_dev = math.sqrt(variance)
+
+                middle_band = mean
+                upper_band = mean + (std_dev_mult * std_dev)
+                lower_band = mean - (std_dev_mult * std_dev)
+
+                return middle_band, upper_band, lower_band, c_open, c_low, c_close, prev_c_close, swing_low_3m
+    except Exception as e:
+        logger.debug("Error calculating 3m Bollinger Bands: %s", e)
+    return None, None, None, None, None, None, None, None
 
 
 def check_green_breakout_structure(smart_api: Any, exchange: str, symbol_token: str, live_price: float) -> tuple[bool, str]:
@@ -2039,10 +2141,21 @@ def run_cloud_bot() -> None:
                                 # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
                                 is_retest_correction_ce = (not is_in_range_ce) and (ce_prev_low is not None) and (ce_prev_low - 10.0 <= live_ce_ltp <= ce_prev_low + 10.0) and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce and is_sustainable_ce
 
-                                if is_range_move_ce or is_mfi_zero_and_bounce_ce or is_retest_correction_ce:
+                                # 15m Signal Alignment
+                                is_15m_aligned_ce = is_range_move_ce or is_mfi_zero_and_bounce_ce or is_retest_correction_ce
+
+                                # 3m Micro Timeframe Confirmation:
+                                # Prior 3m candle closed above 3m Middle Band, active 3m candle retesting near swing low & bouncing toward Open
+                                mb_3m_ce, ub_3m_ce, _, c_open_3m_ce, c_low_3m_ce, _, prev_close_3m_ce, swing_low_3m_ce = get_3m_bollinger_bands(smart_api, "BFO", ce_contract.symbol_token)
+                                
+                                is_3m_above_mb_ce = (prev_close_3m_ce > mb_3m_ce) if (prev_close_3m_ce and mb_3m_ce) else True
+                                is_3m_retest_and_bounce_ce = (c_low_3m_ce is not None and swing_low_3m_ce is not None) and (c_low_3m_ce <= swing_low_3m_ce + 15.0 or live_ce_ltp < c_open_15m) and (live_ce_ltp >= (c_open_3m_ce or c_open_15m))
+                                is_3m_confirmed_ce = is_3m_above_mb_ce and is_3m_retest_and_bounce_ce
+
+                                if is_15m_aligned_ce and is_3m_confirmed_ce:
                                     ce_entry_signal = True
-                                    active_sl_ce = max(1.0, c_low_15m - 5.0)
-                                    entry_type_str_ce = "Range Breakout Bounce" if is_range_move_ce else ("MFI=0 and Open Bounce" if is_mfi_zero_and_bounce_ce else "Retest Post-Correction Bounce")
+                                    active_sl_ce = max(1.0, (c_low_3m_ce if c_low_3m_ce else c_low_15m) - 5.0)
+                                    entry_type_str_ce = "3m Swing Low Retest & Bounce (3m Middle BB Supported)" if is_range_move_ce else ("MFI=0 3m Swing Low Retest & Bounce" if is_mfi_zero_and_bounce_ce else "Retest Post-Correction 3m Bounce")
                                 elif current_slot == "09:15":
                                     # Avoid entry on 9:15 candle if Entry Price is not within +/-35 of EPM Low
                                     ce_entry_in_35_range = (ce_low_level - 35.0 <= live_ce_ltp <= ce_low_level + 35.0)
@@ -2134,10 +2247,21 @@ def run_cloud_bot() -> None:
                                 # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
                                 is_retest_correction_pe = (not is_in_range_pe) and (pe_prev_low is not None) and (pe_prev_low - 10.0 <= live_pe_ltp <= pe_prev_low + 10.0) and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe and is_sustainable_pe
 
-                                if is_range_move_pe or is_mfi_zero_and_bounce_pe or is_retest_correction_pe:
+                                # 15m Signal Alignment
+                                is_15m_aligned_pe = is_range_move_pe or is_mfi_zero_and_bounce_pe or is_retest_correction_pe
+
+                                # 3m Micro Timeframe Confirmation:
+                                # Prior 3m candle closed above 3m Middle Band, active 3m candle retesting near swing low & bouncing toward Open
+                                mb_3m_pe, ub_3m_pe, _, c_open_3m_pe, c_low_3m_pe, _, prev_close_3m_pe, swing_low_3m_pe = get_3m_bollinger_bands(smart_api, "BFO", pe_contract.symbol_token)
+                                
+                                is_3m_above_mb_pe = (prev_close_3m_pe > mb_3m_pe) if (prev_close_3m_pe and mb_3m_pe) else True
+                                is_3m_retest_and_bounce_pe = (c_low_3m_pe is not None and swing_low_3m_pe is not None) and (c_low_3m_pe <= swing_low_3m_pe + 15.0 or live_pe_ltp < p_open_15m) and (live_pe_ltp >= (c_open_3m_pe or p_open_15m))
+                                is_3m_confirmed_pe = is_3m_above_mb_pe and is_3m_retest_and_bounce_pe
+
+                                if is_15m_aligned_pe and is_3m_confirmed_pe:
                                     pe_entry_signal = True
-                                    active_sl_pe = max(1.0, p_low_15m - 5.0)
-                                    entry_type_str_pe = "Range Breakout Bounce" if is_range_move_pe else ("MFI=0 and Open Bounce" if is_mfi_zero_and_bounce_pe else "Retest Post-Correction Bounce")
+                                    active_sl_pe = max(1.0, (c_low_3m_pe if c_low_3m_pe else p_low_15m) - 5.0)
+                                    entry_type_str_pe = "3m Swing Low Retest & Bounce (3m Middle BB Supported)" if is_range_move_pe else ("MFI=0 3m Swing Low Retest & Bounce" if is_mfi_zero_and_bounce_pe else "Retest Post-Correction 3m Bounce")
                                 elif current_slot == "09:15":
                                     # Avoid entry on 9:15 candle if Entry Price is not within +/-35 of EPM Low
                                     pe_entry_in_35_range = (pe_low_level - 35.0 <= live_pe_ltp <= pe_low_level + 35.0)
@@ -2327,7 +2451,26 @@ def run_cloud_bot() -> None:
                     # --- CE EXIT EVALUATION ---
                     # For active position evaluation, use the actual active contract's LTP
                     live_ce_ltp = live_active_ltp
+                    peak_price = max(peak_price, live_ce_ltp)
+                    favorable_gain_ce = peak_price - active_entry_price
                     
+                    # Dynamic Step-Up Trailing SL
+                    if favorable_gain_ce >= 20.0 and favorable_gain_ce < 35.0:
+                        if active_sl < active_entry_price:
+                            active_sl = active_entry_price
+                            logger.info("🔥 [COST PRICE TRAILING ACTIVATED] CE moved +%.2f pts in favor. SL set to Cost Price ₹%.2f.", favorable_gain_ce, active_sl)
+                            send_mobile_alert(f"🔥 *COST PRICE TRAILING ACTIVATED*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to Cost Price: *₹{active_sl:.2f}*")
+                    elif favorable_gain_ce >= 35.0 and favorable_gain_ce < 50.0:
+                        if active_sl < active_entry_price + 20.0:
+                            active_sl = active_entry_price + 20.0
+                            logger.info("📈 [STEP-UP TRAILING (+35pt Move)] CE peak reached ₹%.2f. SL raised to ₹%.2f (+20pt Profit Locked).", peak_price, active_sl)
+                            send_mobile_alert(f"📈 *STEP-UP TRAILING (+35pt Move)*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to: *₹{active_sl:.2f}* (+20pt Profit Locked)")
+                    elif favorable_gain_ce >= 50.0:
+                        new_sl = max(active_sl, peak_price - 15.0)
+                        if new_sl > active_sl:
+                            active_sl = new_sl
+                            logger.info("🚀 [DYNAMIC RIDE TRAILING (+50pt+ Big Move)] CE peak rose to ₹%.2f. Dynamic TSL: ₹%.2f.", peak_price, active_sl)
+
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
                     
@@ -2418,14 +2561,25 @@ def run_cloud_bot() -> None:
                         recent_ce_low = live_ce_ltp
                         recent_pe_low = live_pe_ltp
 
-                    # 3. Standard Practical Target exit or MFI Target Exit (Only if trailing stop is NOT active)
+                    # 3. Standard Practical Target exit or MFI / 3m Upper BB Target Exit
                     if bot_state != "CE_LONG" or active_contract is None:
                         continue
                     c_mfi_val, c_mfi_prev_val, _ = get_15m_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
-                    is_mfi_tp_hit = (c_mfi_val >= 99.0) or (live_ce_ltp >= active_entry_price + 100.0 and c_mfi_val < c_mfi_prev_val)
+                    c_1h_mfi, p_1h_mfi = get_1h_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
+                    res_bb_ce = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
+                    ub_3m_ce = res_bb_ce[1] if res_bb_ce else None
+                    
+                    is_1h_mfi_falling = (c_1h_mfi < p_1h_mfi)
+                    is_3m_ub_near = (ub_3m_ce is not None) and (live_ce_ltp >= ub_3m_ce - 5.0)
+                    is_30pt_gain = (favorable_gain_ce >= 30.0)
+                    
+                    # Book profit at 3m Upper BB High/Near High or +30-40pt gain when 1h MFI is falling
+                    is_3m_bb_profit_booking = is_1h_mfi_falling and (is_3m_ub_near or is_30pt_gain)
+                    
+                    is_mfi_tp_hit = (c_mfi_val >= 99.0) or (live_ce_ltp >= active_entry_price + 100.0 and c_mfi_val < c_mfi_prev_val) or is_3m_bb_profit_booking
                     
                     if not trailing_active and (live_ce_ltp >= active_target or is_mfi_tp_hit):
-                        tp_reason = "MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit else f"Practical Target (₹{active_target:.2f})"
+                        tp_reason = "3m Upper BB / +30pt Profit Booking (1h MFI Falling)" if is_3m_bb_profit_booking else ("MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit else f"Practical Target (₹{active_target:.2f})")
                         logger.info("🟢 [CE EXIT - TARGET HIT] CE LTP ₹%.2f hit %s", live_ce_ltp, tp_reason)
                         send_mobile_alert(f"🟢 *CE EXIT - TARGET REACHED*\n\n"
                                           f"Reason: {tp_reason}\n"
@@ -2459,7 +2613,26 @@ def run_cloud_bot() -> None:
                     # --- PE EXIT EVALUATION ---
                     # For active position evaluation, use the actual active contract's LTP
                     live_pe_ltp = live_active_ltp
+                    peak_price = max(peak_price, live_pe_ltp)
+                    favorable_gain_pe = peak_price - active_entry_price
                     
+                    # Dynamic Step-Up Trailing SL
+                    if favorable_gain_pe >= 20.0 and favorable_gain_pe < 35.0:
+                        if active_sl < active_entry_price:
+                            active_sl = active_entry_price
+                            logger.info("🔥 [COST PRICE TRAILING ACTIVATED] PE moved +%.2f pts in favor. SL set to Cost Price ₹%.2f.", favorable_gain_pe, active_sl)
+                            send_mobile_alert(f"🔥 *COST PRICE TRAILING ACTIVATED*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to Cost Price: *₹{active_sl:.2f}*")
+                    elif favorable_gain_pe >= 35.0 and favorable_gain_pe < 50.0:
+                        if active_sl < active_entry_price + 20.0:
+                            active_sl = active_entry_price + 20.0
+                            logger.info("📈 [STEP-UP TRAILING (+35pt Move)] PE peak reached ₹%.2f. SL raised to ₹%.2f (+20pt Profit Locked).", peak_price, active_sl)
+                            send_mobile_alert(f"📈 *STEP-UP TRAILING (+35pt Move)*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to: *₹{active_sl:.2f}* (+20pt Profit Locked)")
+                    elif favorable_gain_pe >= 50.0:
+                        new_sl = max(active_sl, peak_price - 15.0)
+                        if new_sl > active_sl:
+                            active_sl = new_sl
+                            logger.info("🚀 [DYNAMIC RIDE TRAILING (+50pt+ Big Move)] PE peak rose to ₹%.2f. Dynamic TSL: ₹%.2f.", peak_price, active_sl)
+
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
                     
@@ -2550,14 +2723,25 @@ def run_cloud_bot() -> None:
                         recent_ce_low = live_ce_ltp
                         recent_pe_low = live_pe_ltp
 
-                    # 3. Standard Practical Target exit or MFI Target Exit (Only if trailing stop is NOT active)
+                    # 3. Standard Practical Target exit or MFI / 3m Upper BB Target Exit
                     if bot_state != "PE_LONG" or active_contract is None:
                         continue
                     p_mfi_val, p_mfi_prev_val, _ = get_15m_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
-                    is_mfi_tp_hit_pe = (p_mfi_val >= 99.0) or (live_pe_ltp >= active_entry_price + 100.0 and p_mfi_val < p_mfi_prev_val)
+                    p_1h_mfi, p_prev_1h_mfi = get_1h_mfi(smart_api, "BFO", active_contract.symbol_token, period=5)
+                    res_bb_pe = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
+                    ub_3m_pe = res_bb_pe[1] if res_bb_pe else None
+                    
+                    is_1h_mfi_falling_pe = (p_1h_mfi < p_prev_1h_mfi)
+                    is_3m_ub_near_pe = (ub_3m_pe is not None) and (live_pe_ltp >= ub_3m_pe - 5.0)
+                    is_30pt_gain_pe = (favorable_gain_pe >= 30.0)
+                    
+                    # Book profit at 3m Upper BB High/Near High or +30-40pt gain when 1h MFI is falling
+                    is_3m_bb_profit_booking_pe = is_1h_mfi_falling_pe and (is_3m_ub_near_pe or is_30pt_gain_pe)
+                    
+                    is_mfi_tp_hit_pe = (p_mfi_val >= 99.0) or (live_pe_ltp >= active_entry_price + 100.0 and p_mfi_val < p_mfi_prev_val) or is_3m_bb_profit_booking_pe
                     
                     if not trailing_active and (live_pe_ltp >= active_target or is_mfi_tp_hit_pe):
-                        tp_reason_pe = "MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit_pe else f"Practical Target (₹{active_target:.2f})"
+                        tp_reason_pe = "3m Upper BB / +30pt Profit Booking (1h MFI Falling)" if is_3m_bb_profit_booking_pe else ("MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit_pe else f"Practical Target (₹{active_target:.2f})")
                         logger.info("🟢 [PE EXIT - TARGET HIT] PE LTP ₹%.2f hit %s", live_pe_ltp, tp_reason_pe)
                         send_mobile_alert(f"🟢 *PE EXIT - TARGET REACHED*\n\n"
                                           f"Reason: {tp_reason_pe}\n"
