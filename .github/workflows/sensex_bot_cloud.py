@@ -866,6 +866,90 @@ def get_1h_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 5
     return 50.0, 50.0
 
 
+def get_weekly_open_price(smart_api: Any) -> float:
+    """Fetch SENSEX Index Weekly Open price (Monday 09:15 AM Open)."""
+    try:
+        now_dt = datetime.now(IST)
+        days_since_monday = now_dt.weekday()  # Monday = 0
+        monday_dt = now_dt - timedelta(days=days_since_monday)
+        from_str = monday_dt.strftime("%Y-%m-%d 09:15")
+        to_str = now_dt.strftime("%Y-%m-%d %H:%M")
+        
+        params = {
+            "exchange": "BSE",
+            "symboltoken": "99919000",
+            "interval": "FIFTEEN_MINUTE",
+            "fromdate": from_str,
+            "todate": to_str
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if candles and len(candles[0]) >= 2:
+                weekly_open = float(candles[0][1])  # First 15m candle open on Monday
+                return weekly_open
+    except Exception as e:
+        logger.debug("Error fetching Weekly Open: %s", e)
+    return 77000.0
+
+
+def get_mfi_multi_period(smart_api: Any, exchange: str, symbol_token: str, timeframe: str = "FIFTEEN_MINUTE", periods: list[int] = [5, 14]) -> tuple[dict[int, float], dict[int, float]]:
+    """Calculate Money Flow Index for multiple periods (e.g. 5 and 14) on specified timeframe.
+    Returns (curr_mfis, prev_mfis) as dictionaries keyed by period.
+    """
+    max_period = max(periods)
+    curr_mfis = {p: 50.0 for p in periods}
+    prev_mfis = {p: 50.0 for p in periods}
+    
+    try:
+        now_dt = datetime.now(IST)
+        mins = 15 if timeframe == "FIFTEEN_MINUTE" else 1
+        from_dt = now_dt - timedelta(minutes=mins * (max_period + 10))
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": timeframe,
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = smart_api.getCandle(params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if len(candles) >= max_period + 1:
+                typical_prices = []
+                volumes = []
+                for c in candles:
+                    if len(c) >= 6:
+                        h, l, cl, v = float(c[2]), float(c[3]), float(c[4]), float(c[5])
+                        typical_prices.append((h + l + cl) / 3.0)
+                        volumes.append(v if v > 0 else 1.0)
+
+                for p in periods:
+                    if len(typical_prices) >= p + 1:
+                        def calc_mfi_at(end_idx, period_val):
+                            pos_mf = 0.0
+                            neg_mf = 0.0
+                            for i in range(end_idx - period_val + 1, end_idx + 1):
+                                raw_mf = typical_prices[i] * volumes[i]
+                                if typical_prices[i] > typical_prices[i - 1]:
+                                    pos_mf += raw_mf
+                                elif typical_prices[i] < typical_prices[i - 1]:
+                                    neg_mf += raw_mf
+                            if pos_mf == 0.0:
+                                return 0.0
+                            if neg_mf == 0.0:
+                                return 100.0
+                            mfr = pos_mf / neg_mf
+                            return 100.0 - (100.0 / (1.0 + mfr))
+
+                        curr_mfis[p] = calc_mfi_at(len(typical_prices) - 1, p)
+                        prev_mfis[p] = calc_mfi_at(len(typical_prices) - 2, p)
+    except Exception as e:
+        logger.debug("Error calculating multi-period MFI: %s", e)
+        
+    return curr_mfis, prev_mfis
+
+
 def get_3m_bollinger_bands(smart_api: Any, exchange: str, symbol_token: str, period: int = 20, std_dev_mult: float = 2.0) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None, float | None, float | None]:
     """Fetch recent 3-minute candles and calculate Bollinger Bands (20 SMA, +/- 2 StdDev).
     Returns (middle_band, upper_band, lower_band, c_open, c_low, c_close, prev_c_close, swing_low_3m).
@@ -2115,6 +2199,8 @@ def run_cloud_bot() -> None:
                             else:
                                 check_order = ["CE", "PE"]
                         
+                        weekly_open = get_weekly_open_price(smart_api)
+                        
                         ce_entry_signal = False
                         active_sl_ce = grid.ce_leg.sl_auto
                         entry_type_str_ce = ""
@@ -2125,7 +2211,6 @@ def run_cloud_bot() -> None:
                         
                         for opt_type in check_order:
                             if opt_type == "CE" and not ce_entry_signal and not pe_entry_signal:
-                                ce_mfi, ce_prev_mfi, ce_prev_low = get_15m_mfi(smart_api, "BFO", ce_contract.symbol_token, period=5)
                                 c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
                                 if c_open_15m is None:
                                     c_open_15m = grid.ce_leg.ltp
@@ -2133,105 +2218,71 @@ def run_cloud_bot() -> None:
                                     c_low_15m = min(recent_ce_low, live_ce_ltp)
                                 else:
                                     c_low_15m = min(c_low_15m, recent_ce_low)
-
-                                # Range and MFI Rising Conditions
-                                is_in_range_ce = abs(live_ce_ltp - c_open_15m) <= 20.0
-                                is_mfi_rising_ce = ce_mfi > ce_prev_mfi
-
-                                # Case 1: Consolidation / Sustainable Range Breakout Start
-                                is_sustainable_ce, _ = check_green_breakout_structure(smart_api, "BFO", ce_contract.symbol_token, live_ce_ltp)
-                                is_range_move_ce = is_in_range_ce and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce and is_sustainable_ce
-                                # Case 2: MFI == 0 and Live LTP reaches Open price after correcting to Low
-                                is_mfi_zero_and_bounce_ce = (ce_mfi <= 1.0) and (c_low_15m < c_open_15m) and (live_ce_ltp >= c_open_15m)
-                                # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
-                                is_retest_correction_ce = (not is_in_range_ce) and (ce_prev_low is not None) and (ce_prev_low - 10.0 <= live_ce_ltp <= ce_prev_low + 10.0) and (live_ce_ltp >= c_open_15m) and is_mfi_rising_ce and is_sustainable_ce
-
-                                # 15m Signal Alignment
-                                is_15m_aligned_ce = is_range_move_ce or is_mfi_zero_and_bounce_ce or is_retest_correction_ce
-
-                                # 3m Micro Timeframe Confirmation:
-                                # Prior 3m candle closed above 3m Middle Band, active 3m candle retesting near swing low & bouncing toward Open
-                                mb_3m_ce, ub_3m_ce, _, c_open_3m_ce, c_low_3m_ce, _, prev_close_3m_ce, swing_low_3m_ce = get_3m_bollinger_bands(smart_api, "BFO", ce_contract.symbol_token)
-                                
-                                is_3m_above_mb_ce = (prev_close_3m_ce > mb_3m_ce) if (prev_close_3m_ce and mb_3m_ce) else True
-                                is_3m_retest_and_bounce_ce = (c_low_3m_ce is not None and swing_low_3m_ce is not None) and (c_low_3m_ce <= swing_low_3m_ce + 15.0 or live_ce_ltp < c_open_15m) and (live_ce_ltp >= (c_open_3m_ce or c_open_15m))
-                                is_3m_confirmed_ce = is_3m_above_mb_ce and is_3m_retest_and_bounce_ce
-
-                                if is_15m_aligned_ce and is_3m_confirmed_ce:
-                                    ce_entry_signal = True
-                                    active_sl_ce = max(1.0, (c_low_3m_ce if c_low_3m_ce else c_low_15m) - 5.0)
-                                    entry_type_str_ce = "3m Swing Low Retest & Bounce (3m Middle BB Supported)" if is_range_move_ce else ("MFI=0 3m Swing Low Retest & Bounce" if is_mfi_zero_and_bounce_ce else "Retest Post-Correction 3m Bounce")
-                                elif current_slot == "09:15":
-                                    # Avoid entry on 9:15 candle if Entry Price is not within +/-35 of EPM Low
-                                    ce_entry_in_35_range = (ce_low_level - 35.0 <= live_ce_ltp <= ce_low_level + 35.0)
                                     
-                                    # Or condition for Price Action: 15m Candle Price Bounce to Open OR 5m green breakout and pullback reversal
-                                    is_15m_bounce = (live_ce_ltp >= c_open_15m)
-                                    is_5m_breakout_reversal = False
-                                    pa_sl_ce = None
-                                    try:
-                                        is_5m_breakout_reversal, swing_low_ce = check_5m_breakout_and_reversal(smart_api, ce_contract.symbol_token, live_ce_ltp)
-                                        if is_5m_breakout_reversal and swing_low_ce:
-                                            pa_sl_ce = max(1.0, swing_low_ce - 5.0)
-                                    except Exception as e:
-                                        logger.warning("Error checking 5m PA: %s", e)
-                                        
-                                    if ce_entry_in_35_range and (is_15m_bounce or is_5m_breakout_reversal):
-                                        # DIAGNOSTIC LOG FOR CE 9:15 ENTRY CONDITIONS
-                                        logger.info("🔍 [DIAGNOSTIC CE 9:15] live_ce_ltp: %.2f, c_open_15m: %.2f, 15m_bounce: %s, 5m_breakout: %s",
-                                                    live_ce_ltp, c_open_15m, is_15m_bounce, is_5m_breakout_reversal)
+                                mfis_15m, prev_mfis_15m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
+                                mfis_1m, prev_mfis_1m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "ONE_MINUTE", [5, 14])
+                                mfis_30m, prev_mfis_30m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "THIRTY_MINUTE", [5, 14])
+                                
+                                mfi5_15m = mfis_15m.get(5, 50.0)
+                                mfi14_15m = mfis_15m.get(14, 50.0)
+                                prev_mfi5_15m = prev_mfis_15m.get(5, 50.0)
+                                prev_mfi14_15m = prev_mfis_15m.get(14, 50.0)
+                                
+                                mfi5_1m = mfis_1m.get(5, 50.0)
+                                mfi14_1m = mfis_1m.get(14, 50.0)
+                                prev_mfi5_1m = prev_mfis_1m.get(5, 50.0)
+
+                                mfi5_30m = mfis_30m.get(5, 50.0)
+                                mfi14_30m = mfis_30m.get(14, 50.0)
+                                prev_mfi5_30m = prev_mfis_30m.get(5, 50.0)
+                                prev_mfi14_30m = prev_mfis_30m.get(14, 50.0)
+                                
+                                # 15m MFI Pattern: MFI(5) <= 1.0 (oversold bottom/bounce) and MFI(14) <= 25 starting to rise/bounce
+                                is_mfi5_zero_bounce_ce = (prev_mfi5_15m <= 1.0 and mfi5_15m >= prev_mfi5_15m) or (mfi5_15m <= 1.0)
+                                is_mfi14_bounce_ce = (mfi14_15m <= 25.0) and (mfi14_15m >= prev_mfi14_15m)
+                                is_mfi_pattern_ce = is_mfi5_zero_bounce_ce and is_mfi14_bounce_ce
+                                
+                                # High Alert notification when MFI(5) is at 0 / <= 1.0 on 15m candle
+                                if mfi5_15m <= 1.0 and loop_counter % 30 == 1:
+                                    send_mobile_alert(
+                                        f"🚨 *HIGH ALERT: 15-MIN MFI(5) AT ZERO*\n\n"
+                                        f"Contract: *{ce_contract.trading_symbol}*\n"
+                                        f"15m MFI(5): *{mfi5_15m:.1f}* | MFI(14): *{mfi14_15m:.1f}*\n"
+                                        f"LTP: ₹{live_ce_ltp:.2f}\n"
+                                        f"👉 *Action*: Stay on High Alert! Monitoring for low retest & bounce entry."
+                                    )
+
+                                # Sign of strength: Reducing lower low gap / higher low or minor low break (-15pt) and bounce to open
+                                is_higher_low_ce = (c_low_15m >= recent_ce_low - 15.0)
+                                is_bounce_open_ce = (live_ce_ltp >= c_open_15m)
+                                
+                                # 30-min Dual MFI Reversal Option
+                                is_30m_mfi_option_ce = (mfi5_30m > prev_mfi5_30m) and (mfi14_30m <= 35.0 and mfi14_30m >= prev_mfi14_30m) and is_bounce_open_ce
+
+                                # Regime 1 CE: Spot LTP trading above Weekly Open
+                                if live_spot >= weekly_open:
+                                    if is_mfi_pattern_ce and is_higher_low_ce and is_bounce_open_ce:
                                         ce_entry_signal = True
-                                        
-                                        if is_5m_breakout_reversal and pa_sl_ce:
-                                            active_sl_ce = pa_sl_ce
-                                        else:
-                                            # If Entry is far away than Open price, SL should be same 15 points or -5 from recent 1 min low
-                                            is_far_from_open = (live_ce_ltp - c_open_15m > 35.0)
-                                            if is_far_from_open:
-                                                recent_1m_low = None
-                                                try:
-                                                    candles_1m = get_current_1m_candles(smart_api, "BFO", ce_contract.symbol_token, count_mins=3)
-                                                    if candles_1m:
-                                                        recent_1m_low = float(candles_1m[-1][3])
-                                                except Exception as e:
-                                                    logger.warning("Error getting 1m low: %s", e)
-                                                
-                                                if recent_1m_low:
-                                                    active_sl_ce = max(live_ce_ltp - 15.0, recent_1m_low - 5.0)
-                                                else:
-                                                    active_sl_ce = live_ce_ltp - 15.0
-                                            else:
-                                                active_sl_ce = max(1.0, c_low_15m - 5.0)
-                                        entry_type_str_ce = "First Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open" if is_15m_bounce else "First Slot CE 5m PA Breakout & Pullback Reversal"
+                                        active_sl_ce = max(1.0, live_ce_ltp - 20.0)
+                                        entry_type_str_ce = f"CE Regime 1 (Spot >= Weekly Open {weekly_open:.0f} | 15m MFI14<=25 & MFI5<=1 Bounce | SL-20)"
+                                    elif is_30m_mfi_option_ce:
+                                        ce_entry_signal = True
+                                        active_sl_ce = max(1.0, c_low_15m - 15.0)
+                                        entry_type_str_ce = f"CE 30m Dual MFI Reversal Option (MFI5={mfi5_30m:.1f}, MFI14={mfi14_30m:.1f} | SL-15)"
+                                # Regime 2 CE: Spot jumped or corrected massively
                                 else:
-                                    # Subsequent slot checks: Enter only if NO prior breakout has happened
-                                    has_prior_breakout_ce = False
-                                    try:
-                                        has_prior_breakout_ce = check_prior_breakouts(smart_api, ce_contract.symbol_token)
-                                    except Exception as e:
-                                        logger.warning("Error checking CE prior breakouts: %s", e)
-                                        
-                                    if ce_in_35_range and live_ce_ltp >= c_open_15m and not has_prior_breakout_ce:
+                                    is_1m_mfi_bounce_ce = (mfi5_1m <= 1.0 or mfi14_1m <= 10.0 or mfi5_1m > prev_mfi5_1m)
+                                    is_retest_low_ce = (live_ce_ltp <= recent_ce_low + 15.0 or is_bounce_open_ce)
+                                    if is_mfi_pattern_ce and is_1m_mfi_bounce_ce and is_retest_low_ce:
                                         ce_entry_signal = True
-                                        active_sl_ce = max(1.0, c_low_15m - 5.0)
-                                        entry_type_str_ce = f"{current_slot} Slot CE Near EPM Low (+/-35pt) 15m Bounce to Open"
-                                    elif (abs(live_ce_ltp - ce_low_level) <= 2.0) and (live_ce_ltp >= recent_ce_low + 5.0):
-                                        swing_low_val = None
-                                        try:
-                                            candles_5m = get_current_5m_candles(smart_api, "BFO", ce_contract.symbol_token)
-                                            if candles_5m:
-                                                swing_low_val = min(float(c[3]) for c in candles_5m)
-                                        except Exception:
-                                            pass
-                                        is_near_swing_low = (swing_low_val is not None) and (live_ce_ltp <= swing_low_val + 25.0)
-                                        
-                                        if is_near_swing_low and not has_prior_breakout_ce:
-                                            ce_entry_signal = True
-                                            active_sl_ce = max(1.0, c_low_15m - 5.0)
-                                            entry_type_str_ce = f"{current_slot} Slot CE At/Near EPM Low Bounce (+5pt Reversal)"
-                                        
+                                        active_sl_ce = max(1.0, recent_ce_low - 30.0)
+                                        entry_type_str_ce = f"CE Regime 2 Retest Near Low (Spot < Weekly Open | 1m/15m Dual MFI Bounce | SL-30)"
+                                    elif is_30m_mfi_option_ce:
+                                        ce_entry_signal = True
+                                        active_sl_ce = max(1.0, c_low_15m - 15.0)
+                                        entry_type_str_ce = f"CE 30m Dual MFI Reversal Option (MFI5={mfi5_30m:.1f}, MFI14={mfi14_30m:.1f} | SL-15)"
+
                             elif opt_type == "PE" and not ce_entry_signal and not pe_entry_signal:
-                                pe_mfi, pe_prev_mfi, pe_prev_low = get_15m_mfi(smart_api, "BFO", pe_contract.symbol_token, period=5)
                                 p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
                                 if p_open_15m is None:
                                     p_open_15m = grid.pe_leg.ltp
@@ -2239,110 +2290,69 @@ def run_cloud_bot() -> None:
                                     p_low_15m = min(recent_pe_low, live_pe_ltp)
                                 else:
                                     p_low_15m = min(p_low_15m, recent_pe_low)
-
-                                # Range and MFI Rising Conditions
-                                is_in_range_pe = abs(live_pe_ltp - p_open_15m) <= 20.0
-                                is_mfi_rising_pe = pe_mfi > pe_prev_mfi
-
-                                # Case 1: Consolidation / Sustainable Range Breakout Start
-                                is_sustainable_pe, _ = check_green_breakout_structure(smart_api, "BFO", pe_contract.symbol_token, live_pe_ltp)
-                                is_range_move_pe = is_in_range_pe and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe and is_sustainable_pe
-                                # Case 2: MFI == 0 and Live LTP reaches Open price after correcting to Low
-                                is_mfi_zero_and_bounce_pe = (pe_mfi <= 1.0) and (p_low_15m < p_open_15m) and (live_pe_ltp >= p_open_15m)
-                                # Case 3: Retest after unusual/extended jump (>20pts) near +/-10 of swing low
-                                is_retest_correction_pe = (not is_in_range_pe) and (pe_prev_low is not None) and (pe_prev_low - 10.0 <= live_pe_ltp <= pe_prev_low + 10.0) and (live_pe_ltp >= p_open_15m) and is_mfi_rising_pe and is_sustainable_pe
-
-                                # 15m Signal Alignment
-                                is_15m_aligned_pe = is_range_move_pe or is_mfi_zero_and_bounce_pe or is_retest_correction_pe
-
-                                # 3m Micro Timeframe Confirmation:
-                                # Prior 3m candle closed above 3m Middle Band, active 3m candle retesting near swing low & bouncing toward Open
-                                mb_3m_pe, ub_3m_pe, _, c_open_3m_pe, c_low_3m_pe, _, prev_close_3m_pe, swing_low_3m_pe = get_3m_bollinger_bands(smart_api, "BFO", pe_contract.symbol_token)
-                                
-                                is_3m_above_mb_pe = (prev_close_3m_pe > mb_3m_pe) if (prev_close_3m_pe and mb_3m_pe) else True
-                                is_3m_retest_and_bounce_pe = (c_low_3m_pe is not None and swing_low_3m_pe is not None) and (c_low_3m_pe <= swing_low_3m_pe + 15.0 or live_pe_ltp < p_open_15m) and (live_pe_ltp >= (c_open_3m_pe or p_open_15m))
-                                is_3m_confirmed_pe = is_3m_above_mb_pe and is_3m_retest_and_bounce_pe
-
-                                if is_15m_aligned_pe and is_3m_confirmed_pe:
-                                    pe_entry_signal = True
-                                    active_sl_pe = max(1.0, (c_low_3m_pe if c_low_3m_pe else p_low_15m) - 5.0)
-                                    entry_type_str_pe = "3m Swing Low Retest & Bounce (3m Middle BB Supported)" if is_range_move_pe else ("MFI=0 3m Swing Low Retest & Bounce" if is_mfi_zero_and_bounce_pe else "Retest Post-Correction 3m Bounce")
-                                elif current_slot == "09:15":
-                                    # Avoid entry on 9:15 candle if Entry Price is not within +/-35 of EPM Low
-                                    pe_entry_in_35_range = (pe_low_level - 35.0 <= live_pe_ltp <= pe_low_level + 35.0)
                                     
-                                    # Or condition for Price Action: 15m Candle Price Bounce to Open OR 5m green breakout and pullback reversal
-                                    is_15m_bounce_pe = (live_pe_ltp >= p_open_15m)
-                                    is_5m_breakout_reversal_pe = False
-                                    pa_sl_pe = None
-                                    try:
-                                        is_5m_breakout_reversal_pe, swing_low_pe = check_5m_breakout_and_reversal(smart_api, pe_contract.symbol_token, live_pe_ltp)
-                                        if is_5m_breakout_reversal_pe and swing_low_pe:
-                                            pa_sl_pe = max(1.0, swing_low_pe - 5.0)
-                                    except Exception as e:
-                                        logger.warning("Error checking 5m PE PA: %s", e)
-                                        
-                                    if pe_entry_in_35_range and (is_15m_bounce_pe or is_5m_breakout_reversal_pe):
-                                        # DIAGNOSTIC LOG FOR PE 9:15 ENTRY CONDITIONS
-                                        logger.info("🔍 [DIAGNOSTIC PE 9:15] live_pe_ltp: %.2f, p_open_15m: %.2f, 15m_bounce: %s, 5m_breakout: %s",
-                                                    live_pe_ltp, p_open_15m, is_15m_bounce_pe, is_5m_breakout_reversal_pe)
+                                mfis_15m_pe, prev_mfis_15m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
+                                mfis_1m_pe, prev_mfis_1m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "ONE_MINUTE", [5, 14])
+                                mfis_30m_pe, prev_mfis_30m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "THIRTY_MINUTE", [5, 14])
+                                
+                                mfi5_15m_pe = mfis_15m_pe.get(5, 50.0)
+                                mfi14_15m_pe = mfis_15m_pe.get(14, 50.0)
+                                prev_mfi5_15m_pe = prev_mfis_15m_pe.get(5, 50.0)
+                                prev_mfi14_15m_pe = prev_mfis_15m_pe.get(14, 50.0)
+                                
+                                mfi5_1m_pe = mfis_1m_pe.get(5, 50.0)
+                                mfi14_1m_pe = mfis_1m_pe.get(14, 50.0)
+                                prev_mfi5_1m_pe = prev_mfis_1m_pe.get(5, 50.0)
+
+                                mfi5_30m_pe = mfis_30m_pe.get(5, 50.0)
+                                mfi14_30m_pe = mfis_30m_pe.get(14, 50.0)
+                                prev_mfi5_30m_pe = prev_mfis_30m_pe.get(5, 50.0)
+                                prev_mfi14_30m_pe = prev_mfis_30m_pe.get(14, 50.0)
+                                
+                                # 15m MFI Pattern: MFI(5) <= 1.0 (oversold bottom/bounce) and MFI(14) <= 25 starting to rise/bounce
+                                is_mfi5_zero_bounce_pe = (prev_mfi5_15m_pe <= 1.0 and mfi5_15m_pe >= prev_mfi5_15m_pe) or (mfi5_15m_pe <= 1.0)
+                                is_mfi14_bounce_pe = (mfi14_15m_pe <= 25.0) and (mfi14_15m_pe >= prev_mfi14_15m_pe)
+                                is_mfi_pattern_pe = is_mfi5_zero_bounce_pe and is_mfi14_bounce_pe
+                                
+                                # High Alert notification when MFI(5) is at 0 / <= 1.0 on 15m candle
+                                if mfi5_15m_pe <= 1.0 and loop_counter % 30 == 1:
+                                    send_mobile_alert(
+                                        f"🚨 *HIGH ALERT: 15-MIN MFI(5) AT ZERO*\n\n"
+                                        f"Contract: *{pe_contract.trading_symbol}*\n"
+                                        f"15m MFI(5): *{mfi5_15m_pe:.1f}* | MFI(14): *{mfi14_15m_pe:.1f}*\n"
+                                        f"LTP: ₹{live_pe_ltp:.2f}\n"
+                                        f"👉 *Action*: Stay on High Alert! Monitoring for low retest & bounce entry."
+                                    )
+
+                                # Sign of strength: Reducing lower low gap / higher low or minor low break (-15pt) and bounce to open
+                                is_higher_low_pe = (p_low_15m >= recent_pe_low - 15.0)
+                                is_bounce_open_pe = (live_pe_ltp >= p_open_15m)
+
+                                # 30-min Dual MFI Reversal Option
+                                is_30m_mfi_option_pe = (mfi5_30m_pe > prev_mfi5_30m_pe) and (mfi14_30m_pe <= 35.0 and mfi14_30m_pe >= prev_mfi14_30m_pe) and is_bounce_open_pe
+                                
+                                # Regime 1 PE: Spot LTP trading below Weekly Open
+                                if live_spot <= weekly_open:
+                                    if is_mfi_pattern_pe and is_higher_low_pe and is_bounce_open_pe:
                                         pe_entry_signal = True
-                                        
-                                        if is_5m_breakout_reversal_pe and pa_sl_pe:
-                                            active_sl_pe = pa_sl_pe
-                                        else:
-                                            # If Entry is far away than Open price, SL should be same 15 points or -5 from recent 1 min low
-                                            is_far_from_open = (live_pe_ltp - p_open_15m > 35.0)
-                                            if is_far_from_open:
-                                                recent_1m_low = None
-                                                try:
-                                                    candles_1m = get_current_1m_candles(smart_api, "BFO", pe_contract.symbol_token, count_mins=3)
-                                                    if candles_1m:
-                                                        recent_1m_low = float(candles_1m[-1][3])
-                                                except Exception as e:
-                                                    logger.warning("Error getting 1m low: %s", e)
-                                                
-                                                if recent_1m_low:
-                                                    active_sl_pe = max(live_pe_ltp - 15.0, recent_1m_low - 5.0)
-                                                else:
-                                                    active_sl_pe = live_pe_ltp - 15.0
-                                            else:
-                                                active_sl_pe = max(1.0, p_low_15m - 5.0)
-                                        entry_type_str_pe = "First Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open" if is_15m_bounce_pe else "First Slot PE 5m PA Breakout & Pullback Reversal"
+                                        active_sl_pe = max(1.0, live_pe_ltp - 20.0)
+                                        entry_type_str_pe = f"PE Regime 1 (Spot <= Weekly Open {weekly_open:.0f} | 15m MFI14<=25 & MFI5<=1 Bounce | SL-20)"
+                                    elif is_30m_mfi_option_pe:
+                                        pe_entry_signal = True
+                                        active_sl_pe = max(1.0, p_low_15m - 15.0)
+                                        entry_type_str_pe = f"PE 30m Dual MFI Reversal Option (MFI5={mfi5_30m_pe:.1f}, MFI14={mfi14_30m_pe:.1f} | SL-15)"
+                                # Regime 2 PE: Spot dropped or jumped massively
                                 else:
-                                    p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
-                                    if p_open_15m is None:
-                                        p_open_15m = grid.pe_leg.ltp
-                                    if p_low_15m is None:
-                                        p_low_15m = min(recent_pe_low, live_pe_ltp)
-                                    else:
-                                        p_low_15m = min(p_low_15m, recent_pe_low)
-                                        
-                                    # Subsequent slot checks: Enter only if NO prior breakout has happened
-                                    has_prior_breakout_pe = False
-                                    try:
-                                        has_prior_breakout_pe = check_prior_breakouts(smart_api, pe_contract.symbol_token)
-                                    except Exception as e:
-                                        logger.warning("Error checking PE prior breakouts: %s", e)
-                                        
-                                    if pe_in_35_range and live_pe_ltp >= p_open_15m and not has_prior_breakout_pe:
+                                    is_1m_mfi_bounce_pe = (mfi5_1m_pe <= 1.0 or mfi14_1m_pe <= 10.0 or mfi5_1m_pe > prev_mfi5_1m_pe)
+                                    is_retest_low_pe = (live_pe_ltp <= recent_pe_low + 15.0 or is_bounce_open_pe)
+                                    if is_mfi_pattern_pe and is_1m_mfi_bounce_pe and is_retest_low_pe:
                                         pe_entry_signal = True
-                                        active_sl_pe = max(1.0, p_low_15m - 5.0)
-                                        entry_type_str_pe = f"{current_slot} Slot PE Near EPM Low (+/-35pt) 15m Bounce to Open"
-                                    elif (abs(live_pe_ltp - pe_low_level) <= 2.0) and (live_pe_ltp >= recent_pe_low + 5.0):
-                                        swing_low_val_pe = None
-                                        try:
-                                            candles_5m = get_current_5m_candles(smart_api, "BFO", pe_contract.symbol_token)
-                                            if candles_5m:
-                                                swing_low_val_pe = min(float(c[3]) for c in candles_5m)
-                                        except Exception:
-                                            pass
-                                        is_near_swing_low_pe = (swing_low_val_pe is not None) and (live_pe_ltp <= swing_low_val_pe + 25.0)
-                                        
-                                        if is_near_swing_low_pe and not has_prior_breakout_pe:
-                                            pe_entry_signal = True
-                                            active_sl_pe = max(1.0, p_low_15m - 5.0)
-                                            entry_type_str_pe = f"{current_slot} Slot PE At/Near EPM Low Bounce (+5pt Reversal)"
+                                        active_sl_pe = max(1.0, recent_pe_low - 30.0)
+                                        entry_type_str_pe = f"PE Regime 2 Retest Near Low (Spot > Weekly Open | 1m/15m Dual MFI Bounce | SL-30)"
+                                    elif is_30m_mfi_option_pe:
+                                        pe_entry_signal = True
+                                        active_sl_pe = max(1.0, p_low_15m - 15.0)
+                                        entry_type_str_pe = f"PE 30m Dual MFI Reversal Option (MFI5={mfi5_30m_pe:.1f}, MFI14={mfi14_30m_pe:.1f} | SL-15)"
                         
                         # Trigger CE Long Entry
                         if ce_entry_signal:
