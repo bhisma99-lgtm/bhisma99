@@ -2222,6 +2222,7 @@ def run_cloud_bot() -> None:
                                 mfis_15m, prev_mfis_15m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
                                 mfis_1m, prev_mfis_1m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "ONE_MINUTE", [5, 14])
                                 mfis_30m, prev_mfis_30m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "THIRTY_MINUTE", [5, 14])
+                                mfis_60m, prev_mfis_60m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "ONE_HOUR", [5, 14])
                                 
                                 mfi5_15m = mfis_15m.get(5, 50.0)
                                 mfi14_15m = mfis_15m.get(14, 50.0)
@@ -2236,6 +2237,18 @@ def run_cloud_bot() -> None:
                                 mfi14_30m = mfis_30m.get(14, 50.0)
                                 prev_mfi5_30m = prev_mfis_30m.get(5, 50.0)
                                 prev_mfi14_30m = prev_mfis_30m.get(14, 50.0)
+
+                                mfi5_60m = mfis_60m.get(5, 50.0)
+                                mfi14_60m = mfis_60m.get(14, 50.0)
+                                prev_mfi5_60m = prev_mfis_60m.get(5, 50.0)
+                                prev_mfi14_60m = prev_mfis_60m.get(14, 50.0)
+
+                                # Higher Timeframe Block Filters:
+                                # 1. Hourly chart both MFI falling (60m MFI5 & MFI14 falling)
+                                is_60m_both_falling_ce = (mfi5_60m < prev_mfi5_60m) and (mfi14_60m < prev_mfi14_60m)
+                                # 2. 30m MFI 5 falling after reaching 100/overbought (>= 90)
+                                is_30m_overbought_falling_ce = (mfi5_30m >= 90.0 or prev_mfi5_30m >= 90.0) and (mfi5_30m < prev_mfi5_30m)
+                                higher_tf_block_ce = is_60m_both_falling_ce or is_30m_overbought_falling_ce
                                 
                                 # 15m MFI Pattern: MFI(5) <= 1.0 (oversold bottom/bounce) and MFI(14) <= 25 starting to rise/bounce
                                 is_mfi5_zero_bounce_ce = (prev_mfi5_15m <= 1.0 and mfi5_15m >= prev_mfi5_15m) or (mfi5_15m <= 1.0)
@@ -2263,7 +2276,7 @@ def run_cloud_bot() -> None:
                                 is_reentry_ce = (mfi14_15m >= prev_mfi14_15m and mfi14_15m > 20.0) and (mfi5_15m > prev_mfi5_15m) and is_bounce_open_ce
 
                                 # Regime 1 CE: Spot LTP trading above Weekly Open
-                                if live_spot >= weekly_open:
+                                if live_spot >= weekly_open and not higher_tf_block_ce:
                                     if is_mfi_pattern_ce and is_higher_low_ce and is_bounce_open_ce:
                                         ce_entry_signal = True
                                         active_sl_ce = max(1.0, live_ce_ltp - 20.0)
@@ -2277,7 +2290,7 @@ def run_cloud_bot() -> None:
                                         active_sl_ce = max(1.0, c_low_15m - 15.0)
                                         entry_type_str_ce = f"CE Trend Continuation Re-Entry (MFI14={mfi14_15m:.1f}, MFI5={mfi5_15m:.1f} Bouncing | SL-15)"
                                 # Regime 2 CE: Spot jumped or corrected massively
-                                else:
+                                elif not higher_tf_block_ce:
                                     is_1m_mfi_bounce_ce = (mfi5_1m <= 1.0 or mfi14_1m <= 10.0 or mfi5_1m > prev_mfi5_1m)
                                     is_retest_low_ce = (live_ce_ltp <= recent_ce_low + 15.0 or is_bounce_open_ce)
                                     if is_mfi_pattern_ce and is_1m_mfi_bounce_ce and is_retest_low_ce:
@@ -2305,6 +2318,7 @@ def run_cloud_bot() -> None:
                                 mfis_15m_pe, prev_mfis_15m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
                                 mfis_1m_pe, prev_mfis_1m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "ONE_MINUTE", [5, 14])
                                 mfis_30m_pe, prev_mfis_30m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "THIRTY_MINUTE", [5, 14])
+                                mfis_60m_pe, prev_mfis_60m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "ONE_HOUR", [5, 14])
                                 
                                 mfi5_15m_pe = mfis_15m_pe.get(5, 50.0)
                                 mfi14_15m_pe = mfis_15m_pe.get(14, 50.0)
@@ -2319,7 +2333,19 @@ def run_cloud_bot() -> None:
                                 mfi14_30m_pe = mfis_30m_pe.get(14, 50.0)
                                 prev_mfi5_30m_pe = prev_mfis_30m_pe.get(5, 50.0)
                                 prev_mfi14_30m_pe = prev_mfis_30m_pe.get(14, 50.0)
-                                
+
+                                mfi5_60m_pe = mfis_60m_pe.get(5, 50.0)
+                                mfi14_60m_pe = mfis_60m_pe.get(14, 50.0)
+                                prev_mfi5_60m_pe = prev_mfis_60m_pe.get(5, 50.0)
+                                prev_mfi14_60m_pe = prev_mfis_60m_pe.get(14, 50.0)
+
+                                # Higher Timeframe Block Filters for PE:
+                                # 1. Hourly chart both MFI falling (60m MFI5 & MFI14 falling)
+                                is_60m_both_falling_pe = (mfi5_60m_pe < prev_mfi5_60m_pe) and (mfi14_60m_pe < prev_mfi14_60m_pe)
+                                # 2. 30m MFI 5 falling after reaching 100/overbought (>= 90)
+                                is_30m_overbought_falling_pe = (mfi5_30m_pe >= 90.0 or prev_mfi5_30m_pe >= 90.0) and (mfi5_30m_pe < prev_mfi5_30m_pe)
+                                higher_tf_block_pe = is_60m_both_falling_pe or is_30m_overbought_falling_pe
+
                                 # 15m MFI Pattern: MFI(5) <= 1.0 (oversold bottom/bounce) and MFI(14) <= 25 starting to rise/bounce
                                 is_mfi5_zero_bounce_pe = (prev_mfi5_15m_pe <= 1.0 and mfi5_15m_pe >= prev_mfi5_15m_pe) or (mfi5_15m_pe <= 1.0)
                                 is_mfi14_bounce_pe = (mfi14_15m_pe <= 25.0) and (mfi14_15m_pe >= prev_mfi14_15m_pe)
@@ -2346,7 +2372,7 @@ def run_cloud_bot() -> None:
                                 is_reentry_pe = (mfi14_15m_pe >= prev_mfi14_15m_pe and mfi14_15m_pe > 20.0) and (mfi5_15m_pe > prev_mfi5_15m_pe) and is_bounce_open_pe
 
                                 # Regime 1 PE: Spot LTP trading below Weekly Open
-                                if live_spot <= weekly_open:
+                                if live_spot <= weekly_open and not higher_tf_block_pe:
                                     if is_mfi_pattern_pe and is_higher_low_pe and is_bounce_open_pe:
                                         pe_entry_signal = True
                                         active_sl_pe = max(1.0, live_pe_ltp - 20.0)
@@ -2360,7 +2386,7 @@ def run_cloud_bot() -> None:
                                         active_sl_pe = max(1.0, p_low_15m - 15.0)
                                         entry_type_str_pe = f"PE Trend Continuation Re-Entry (MFI14={mfi14_15m_pe:.1f}, MFI5={mfi5_15m_pe:.1f} Bouncing | SL-15)"
                                 # Regime 2 PE: Spot dropped or jumped massively
-                                else:
+                                elif not higher_tf_block_pe:
                                     is_1m_mfi_bounce_pe = (mfi5_1m_pe <= 1.0 or mfi14_1m_pe <= 10.0 or mfi5_1m_pe > prev_mfi5_1m_pe)
                                     is_retest_low_pe = (live_pe_ltp <= recent_pe_low + 15.0 or is_bounce_open_pe)
                                     if is_mfi_pattern_pe and is_1m_mfi_bounce_pe and is_retest_low_pe:
