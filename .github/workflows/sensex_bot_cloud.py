@@ -1828,9 +1828,11 @@ def run_cloud_bot() -> None:
     trail_buffer = 5.0
     offloaded = False
 
-    # Memory of lowest prices observed in IDLE state for bounce SL tracking
+    # Memory of lowest and highest prices observed in IDLE state
     recent_ce_low = ce_ltp
     recent_pe_low = pe_ltp
+    previous_ce_high = ce_ltp
+    previous_pe_high = pe_ltp
     previous_ce_ltp = ce_ltp
     previous_pe_ltp = pe_ltp
 
@@ -2285,24 +2287,40 @@ def run_cloud_bot() -> None:
 
                                 is_bounce_open_ce = (live_ce_ltp >= c_open_15m)
                                 
-                                # 30-min Dual MFI Reversal Option: Secondary entry only after initial setup, MFI 14 MUST be rising
+                                # 1. Dual 15m MFI Pattern for Initial Entry (Must be below Middle Band near Lower Band & 30m MFI 14 not falling)
+                                is_below_mb_ce = (live_ce_ltp < grid.ce_leg.ltp)
+                                is_30m_mfi14_not_falling_ce = (mfi14_30m >= prev_mfi14_30m)
+                                is_clean_initial_entry_ce = is_initial_mfi_pattern_ce and is_below_mb_ce and is_30m_mfi14_not_falling_ce
+
+                                # 2. Previous High Breakout Momentum Entry Option:
+                                # 15m MFI 5 increasing from 0, MFI 14 > 25 started moving up, breaks Previous High, near Lower Band, 30m both MFIs favorable
+                                is_30m_both_favorable_ce = (mfi5_30m >= prev_mfi5_30m) and (mfi14_30m >= prev_mfi14_30m + 0.5)
+                                is_breakout_entry_ce = is_mfi5_zero_bounce_ce and (mfi14_15m > 25.0 and mfi14_15m >= prev_mfi14_15m) and (live_ce_ltp > previous_ce_high) and is_below_mb_ce and is_30m_both_favorable_ce
+
+                                # 3. 30-min Dual MFI Reversal Option: Secondary entry only after initial setup, MFI 14 MUST be rising
                                 is_30m_mfi_option_ce = initial_entry_happened and (mfi5_30m > prev_mfi5_30m) and (mfi14_30m <= 35.0 and mfi14_30m >= prev_mfi14_30m) and is_bounce_open_ce
 
-                                # Re-Entry Condition:
+                                # 4. Re-Entry Condition:
                                 # Price consolidates near/below Middle Band, closes green, both 15m MFIs rising, and no MFI falling in 30m/1h
                                 is_no_mfi_falling_htf_ce = (mfi5_30m >= prev_mfi5_30m and mfi14_30m >= prev_mfi14_30m and mfi5_60m >= prev_mfi5_60m and mfi14_60m >= prev_mfi14_60m)
                                 is_reentry_ce = allow_reentry_live and is_bounce_open_ce and (mfi5_15m > prev_mfi5_15m and mfi14_15m >= prev_mfi14_15m) and is_no_mfi_falling_htf_ce
 
-                                # One-Time Post-SL Recovery Re-Entry (+2 Lots)
-                                is_recovery_reentry_ce = recovery_reentry_eligible and not recovery_reentry_done and is_bounce_open_ce and (mfi5_15m > prev_mfi5_15m and mfi14_15m > prev_mfi14_15m)
+                                # 5. One-Time Post-SL Recovery Re-Entry (+2 Lots) with Lower Band proximity and 30m both MFIs favorable
+                                is_recovery_reentry_ce = recovery_reentry_eligible and not recovery_reentry_done and is_bounce_open_ce and (mfi5_15m > prev_mfi5_15m and mfi14_15m > prev_mfi14_15m) and is_below_mb_ce and is_30m_both_favorable_ce
 
                                 if not higher_tf_block_ce:
-                                    if is_direction_aligned_ce and is_initial_mfi_pattern_ce:
+                                    if is_direction_aligned_ce and is_clean_initial_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
                                         active_sl_ce = max(live_ce_ltp - 20.0, c_low_15m - 4.0)
                                         entry_type_str_ce = f"CE Initial MFI Bounce (5=0 & 14<={mfi14_15m:.1f} | SL-4 below Low)"
+                                    elif is_breakout_entry_ce:
+                                        ce_entry_signal = True
+                                        initial_entry_happened = True
+                                        lot_size = base_lot_size
+                                        active_sl_ce = max(live_ce_ltp - 20.0, c_low_15m - 4.0)
+                                        entry_type_str_ce = f"CE Previous High Breakout Momentum Entry (MFI14={mfi14_15m:.1f} | SL-4)"
                                     elif is_recovery_reentry_ce:
                                         ce_entry_signal = True
                                         recovery_reentry_eligible = False
@@ -2383,24 +2401,40 @@ def run_cloud_bot() -> None:
 
                                 is_bounce_open_pe = (live_pe_ltp >= p_open_15m)
 
-                                # 30-min Dual MFI Reversal Option: Secondary entry only after initial setup, MFI 14 MUST be rising
+                                # 1. Dual 15m MFI Pattern for Initial Entry (Must be below Middle Band near Lower Band & 30m MFI 14 not falling)
+                                is_below_mb_pe = (live_pe_ltp < grid.pe_leg.ltp)
+                                is_30m_mfi14_not_falling_pe = (mfi14_30m_pe >= prev_mfi14_30m_pe)
+                                is_clean_initial_entry_pe = is_initial_mfi_pattern_pe and is_below_mb_pe and is_30m_mfi14_not_falling_pe
+
+                                # 2. Previous High Breakout Momentum Entry Option:
+                                # 15m MFI 5 increasing from 0, MFI 14 > 25 started moving up, breaks Previous High, near Lower Band, 30m both MFIs favorable
+                                is_30m_both_favorable_pe = (mfi5_30m_pe >= prev_mfi5_30m_pe) and (mfi14_30m_pe >= prev_mfi14_30m_pe + 0.5)
+                                is_breakout_entry_pe = is_mfi5_zero_bounce_pe and (mfi14_15m_pe > 25.0 and mfi14_15m_pe >= prev_mfi14_15m_pe) and (live_pe_ltp > previous_pe_high) and is_below_mb_pe and is_30m_both_favorable_pe
+
+                                # 3. 30-min Dual MFI Reversal Option: Secondary entry only after initial setup, MFI 14 MUST be rising
                                 is_30m_mfi_option_pe = initial_entry_happened and (mfi5_30m_pe > prev_mfi5_30m_pe) and (mfi14_30m_pe <= 35.0 and mfi14_30m_pe >= prev_mfi14_30m_pe) and is_bounce_open_pe
                                 
-                                # Re-Entry Condition:
+                                # 4. Re-Entry Condition:
                                 # Price consolidates near/below Middle Band, closes green, both 15m MFIs rising, and no MFI falling in 30m/1h
                                 is_no_mfi_falling_htf_pe = (mfi5_30m_pe >= prev_mfi5_30m_pe and mfi14_30m_pe >= prev_mfi14_30m_pe and mfi5_60m_pe >= prev_mfi5_60m_pe and mfi14_60m_pe >= prev_mfi14_60m_pe)
                                 is_reentry_pe = allow_reentry_live and is_bounce_open_pe and (mfi5_15m_pe > prev_mfi5_15m_pe and mfi14_15m_pe >= prev_mfi14_15m_pe) and is_no_mfi_falling_htf_pe
 
-                                # One-Time Post-SL Recovery Re-Entry (+2 Lots)
-                                is_recovery_reentry_pe = recovery_reentry_eligible and not recovery_reentry_done and is_bounce_open_pe and (mfi5_15m_pe > prev_mfi5_15m_pe and mfi14_15m_pe > prev_mfi14_15m_pe)
+                                # 5. One-Time Post-SL Recovery Re-Entry (+2 Lots) with Lower Band proximity and 30m both MFIs favorable
+                                is_recovery_reentry_pe = recovery_reentry_eligible and not recovery_reentry_done and is_bounce_open_pe and (mfi5_15m_pe > prev_mfi5_15m_pe and mfi14_15m_pe > prev_mfi14_15m_pe) and is_below_mb_pe and is_30m_both_favorable_pe
 
                                 if not higher_tf_block_pe:
-                                    if is_direction_aligned_pe and is_initial_mfi_pattern_pe:
+                                    if is_direction_aligned_pe and is_clean_initial_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
                                         active_sl_pe = max(live_pe_ltp - 20.0, p_low_15m - 4.0)
                                         entry_type_str_pe = f"PE Initial MFI Bounce (5=0 & 14<={mfi14_15m_pe:.1f} | SL-4 below Low)"
+                                    elif is_breakout_entry_pe:
+                                        pe_entry_signal = True
+                                        initial_entry_happened = True
+                                        lot_size = base_lot_size
+                                        active_sl_pe = max(live_pe_ltp - 20.0, p_low_15m - 4.0)
+                                        entry_type_str_pe = f"PE Previous High Breakout Momentum Entry (MFI14={mfi14_15m_pe:.1f} | SL-4)"
                                     elif is_recovery_reentry_pe:
                                         pe_entry_signal = True
                                         recovery_reentry_eligible = False
