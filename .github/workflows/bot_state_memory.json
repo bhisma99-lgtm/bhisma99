@@ -1,0 +1,122 @@
+{
+    "date": "2026-09-05",
+    "trades_completed": 0,
+    "grid_time_slot": "12:15",
+    "bot_state": "IDLE",
+    "active_entry_price": 0.0,
+    "active_sl": 0.0,
+    "active_target": 0.0,
+    "peak_price": 0.0,
+    "trailing_active": false,
+    "offloaded": false,
+    "lot_size": 1,
+    "entry_time": null,
+    "grid": {
+        "spot": 76515.43,
+        "vix": 10.68,
+        "dte": 5.0,
+        "index_move": 956.4424557372778,
+        "ce_leg": {
+            "strike": 76500.0,
+            "ltp": 545.1,
+            "delta": 0.5394692488739561,
+            "target_epm": 685.6202541665411,
+            "epm_lower_range": 404.5797458334589,
+            "sl_auto": 389.5797458334589,
+            "practical_target": 653.4539715694277,
+            "option_type": "CE"
+        },
+        "pe_leg": {
+            "strike": 76600.0,
+            "ltp": 330.35,
+            "delta": 0.5021583595954939,
+            "target_epm": 375.0680843792443,
+            "epm_lower_range": 285.63191562075576,
+            "sl_auto": 270.63191562075576,
+            "practical_target": 431.2099706703086,
+            "option_type": "PE"
+        },
+        "ce_legs": [
+            {
+                "strike": 76500.0,
+                "ltp": 545.1,
+                "delta": 0.5394692488739561,
+                "target_epm": 685.6202541665411,
+                "epm_lower_range": 404.5797458334589,
+                "sl_auto": 389.5797458334589,
+                "practical_target": 653.4539715694277,
+                "option_type": "CE"
+            },
+            {
+                "strike": 76400.0,
+                "ltp": 611.15,
+                "delta": 0.5807217784473556,
+                "target_epm": 815.834536558564,
+                "epm_lower_range": 406.465463441436,
+                "sl_auto": 391.465463441436,
+                "practical_target": 727.7896624144447,
+                "option_type": "CE"
+            },
+            {
+                "strike": 76300.0,
+                "ltp": 685.8,
+                "delta": 0.6211570316631556,
+                "target_epm": 980.6838230247447,
+                "epm_lower_range": 390.91617697525527,
+                "sl_auto": 375.91617697525527,
+                "practical_target": 810.5612009201011,
+                "option_type": "CE"
+            }
+        ],
+        "pe_legs": [
+            {
+                "strike": 76600.0,
+                "ltp": 330.35,
+                "delta": 0.5021583595954939,
+                "target_epm": 375.0680843792443,
+                "epm_lower_range": 285.63191562075576,
+                "sl_auto": 270.63191562075576,
+                "practical_target": 431.2099706703086,
+                "option_type": "PE"
+            },
+            {
+                "strike": 76700.0,
+                "ltp": 372.95,
+                "delta": 0.5437083937723044,
+                "target_epm": 439.766923203788,
+                "epm_lower_range": 306.133076796212,
+                "sl_auto": 291.133076796212,
+                "practical_target": 482.15541618235625,
+                "option_type": "PE"
+            },
+            {
+                "strike": 76800.0,
+                "ltp": 420.05,
+                "delta": 0.5847324743121942,
+                "target_epm": 518.0823877810273,
+                "epm_lower_range": 322.01761221897283,
+                "sl_auto": 307.01761221897283,
+                "practical_target": 537.4952223729028,
+                "option_type": "PE"
+            }
+        ]
+    },
+    "ce_contract": {
+        "exchange": "BFO",
+        "trading_symbol": "SENSEX2691076500CE",
+        "symbol_token": "860448",
+        "expiry": "2026-09-10",
+        "strike": 76500.0,
+        "option_type": "CE",
+        "delta": 0.5394692488739561
+    },
+    "pe_contract": {
+        "exchange": "BFO",
+        "trading_symbol": "SENSEX2691076600PE",
+        "symbol_token": "860430",
+        "expiry": "2026-09-10",
+        "strike": 76600.0,
+        "option_type": "PE",
+        "delta": -0.5021583595954939
+    }
+}
