@@ -1096,7 +1096,7 @@ def load_bot_memory() -> dict | None:
     return None
 
 
-def save_bot_memory_full(trades_completed: int, grid_time_slot: str, grid: EPMMasterGrid, ce_contract: OptionContract, pe_contract: OptionContract, bot_state: str, active_contract: OptionContract | None, active_entry_price: float, active_sl: float, active_target: float, peak_price: float, trailing_active: bool, offloaded: bool, lot_size: int, entry_time: datetime | None) -> None:
+def save_bot_memory_full(trades_completed: int, grid_time_slot: str, grid: EPMMasterGrid, ce_contract: OptionContract, pe_contract: OptionContract, bot_state: str, active_contract: OptionContract | None, active_entry_price: float, active_sl: float, active_target: float, peak_price: float, trailing_active: bool, offloaded: bool, lot_size: int, entry_time: datetime | None, entry_mfi_falling_15m: bool = False) -> None:
     import json
     try:
         data = {
@@ -1112,6 +1112,7 @@ def save_bot_memory_full(trades_completed: int, grid_time_slot: str, grid: EPMMa
             "offloaded": offloaded,
             "lot_size": lot_size,
             "entry_time": entry_time.isoformat() if entry_time else None,
+            "entry_mfi_falling_15m": entry_mfi_falling_15m,
             "grid": {
                 "spot": grid.spot,
                 "vix": grid.vix,
@@ -1189,7 +1190,7 @@ def save_bot_memory_full(trades_completed: int, grid_time_slot: str, grid: EPMMa
 
 
 def save_bot_memory(trades_completed: int, grid_time_slot: str, grid: EPMMasterGrid, ce_contract: OptionContract, pe_contract: OptionContract) -> None:
-    save_bot_memory_full(trades_completed, grid_time_slot, grid, ce_contract, pe_contract, "IDLE", None, 0.0, 0.0, 0.0, 0.0, False, False, 1, None)
+    save_bot_memory_full(trades_completed, grid_time_slot, grid, ce_contract, pe_contract, "IDLE", None, 0.0, 0.0, 0.0, 0.0, False, False, 1, None, False)
 
 
 def get_current_1m_candles(smart_api: Any, exchange: str, symbol_token: str, count_mins: int = 15) -> list:
@@ -1716,6 +1717,7 @@ def run_cloud_bot() -> None:
                     trailing_active = mem.get("trailing_active", False)
                     offloaded = mem.get("offloaded", False)
                     lot_size = mem.get("lot_size", 1)
+                    entry_mfi_falling_15m = mem.get("entry_mfi_falling_15m", False)
                     
                     saved_entry_time = mem.get("entry_time")
                     if saved_entry_time:
@@ -1847,6 +1849,7 @@ def run_cloud_bot() -> None:
     active_sl = 0.0
     active_target = 0.0
     entry_time = None
+    entry_mfi_falling_15m = False
     lot_size = 1
     loop_counter = 0
     is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
@@ -2360,11 +2363,10 @@ def run_cloud_bot() -> None:
                                 is_15m_both_increasing_ce = (mfi5_15m > prev_mfi5_15m) and (mfi14_15m > prev_mfi14_15m)
                                 is_30m_mfi_option_ce = initial_entry_happened and is_15m_both_increasing_ce and (mfi14_15m <= 35.0) and is_bounce_open_ce and not is_last_30m_breakdown_ce
 
-                                # 4. Re-Entry Condition:
-                                # Price consolidates near/below Middle Band, closes green, both 15m MFIs rising, and no MFI falling in 30m/1h
+                                # 4. Re-Entry Condition ("MFI(14) Trend Re-Entry (MB Consolidation)"):
                                 is_no_mfi_falling_htf_ce = (mfi5_30m >= prev_mfi5_30m and mfi14_30m >= prev_mfi14_30m and mfi5_60m >= prev_mfi5_60m and mfi14_60m >= prev_mfi14_60m)
                                 
-                                # Enforce three entry restrictions for "MFI(14) Trend Re-Entry (MB Consolidation)"
+                                # Enforce entry restrictions for "MFI(14) Trend Re-Entry (MB Consolidation)"
                                 is_30m_both_falling_ce = (mfi5_30m < prev_mfi5_30m) and (mfi14_30m < prev_mfi14_30m)
                                 is_reentry_blocked_by_30m_ce = (
                                     (mfi5_30m == 100.0) or
@@ -2544,11 +2546,10 @@ def run_cloud_bot() -> None:
                                 is_15m_both_increasing_pe = (mfi5_15m_pe > prev_mfi5_15m_pe) and (mfi14_15m_pe > prev_mfi14_15m_pe)
                                 is_30m_mfi_option_pe = initial_entry_happened and is_15m_both_increasing_pe and (mfi14_15m_pe <= 35.0) and is_bounce_open_pe and not is_last_30m_breakdown_pe
                                 
-                                # 4. Re-Entry Condition:
-                                # Price consolidates near/below Middle Band, closes green, both 15m MFIs rising, and no MFI falling in 30m/1h
+                                # 4. Re-Entry Condition ("MFI(14) Trend Re-Entry (MB Consolidation)"):
                                 is_no_mfi_falling_htf_pe = (mfi5_30m_pe >= prev_mfi5_30m_pe and mfi14_30m_pe >= prev_mfi14_30m_pe and mfi5_60m_pe >= prev_mfi5_60m_pe and mfi14_60m_pe >= prev_mfi14_60m_pe)
                                 
-                                # Enforce three entry restrictions for "MFI(14) Trend Re-Entry (MB Consolidation)"
+                                # Enforce entry restrictions for "MFI(14) Trend Re-Entry (MB Consolidation)"
                                 is_30m_both_falling_pe = (mfi5_30m_pe < prev_mfi5_30m_pe) and (mfi14_30m_pe < prev_mfi14_30m_pe)
                                 is_reentry_blocked_by_30m_pe = (
                                     (mfi5_30m_pe == 100.0) or
@@ -2656,7 +2657,9 @@ def run_cloud_bot() -> None:
                                 offloaded = False
                                 
                                 sys.stdout.write("\n")
-                                logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_ce_ltp, entry_type_str_ce, active_sl, active_target)
+                                is_any_mfi_falling_at_entry_ce = (curr_mfi5_ce < prev_mfi5_ce) or (curr_mfi14_ce < prev_mfi14_ce)
+                                entry_mfi_falling_15m = is_any_mfi_falling_at_entry_ce
+                                logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f) | Diagnostic: 15m MFI(5)=%.1f (prev %.1f), MFI(14)=%.1f (prev %.1f) [Falling at Entry: %s]", live_ce_ltp, entry_type_str_ce, active_sl, active_target, curr_mfi5_ce, prev_mfi5_ce, curr_mfi14_ce, prev_mfi14_ce, is_any_mfi_falling_at_entry_ce)
                                 send_mobile_alert(f"🟢 *CE ENTRY SIGNAL ALIGNED ({entry_type_str_ce})*\n\n"
                                                   f"Contract: *{active_contract.trading_symbol}*\n"
                                                   f"Entry Price: ₹{active_entry_price:.2f}\n"
@@ -2675,7 +2678,7 @@ def run_cloud_bot() -> None:
                                     "qty": qty_to_trade,
                                     "trades_count": trades_completed + 1
                                 })
-                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time, entry_mfi_falling_15m)
                             elif bot_state == "PE_LONG":
                                 if pending_swap_signal != "CE":
                                     pending_swap_signal = "CE"
@@ -2710,7 +2713,9 @@ def run_cloud_bot() -> None:
                                 offloaded = False
                                 
                                 sys.stdout.write("\n")
-                                logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f)", live_pe_ltp, entry_type_str_pe, active_sl, active_target)
+                                is_any_mfi_falling_at_entry_pe = (curr_mfi5_pe < prev_mfi5_pe) or (curr_mfi14_pe < prev_mfi14_pe)
+                                entry_mfi_falling_15m = is_any_mfi_falling_at_entry_pe
+                                logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f) | Diagnostic: 15m MFI(5)=%.1f (prev %.1f), MFI(14)=%.1f (prev %.1f) [Falling at Entry: %s]", live_pe_ltp, entry_type_str_pe, active_sl, active_target, curr_mfi5_pe, prev_mfi5_pe, curr_mfi14_pe, prev_mfi14_pe, is_any_mfi_falling_at_entry_pe)
                                 send_mobile_alert(f"🟢 *PE ENTRY SIGNAL ALIGNED ({entry_type_str_pe})*\n\n"
                                                   f"Contract: *{active_contract.trading_symbol}*\n"
                                                   f"Entry Price: ₹{active_entry_price:.2f}\n"
@@ -2729,7 +2734,7 @@ def run_cloud_bot() -> None:
                                     "qty": qty_to_trade,
                                     "trades_count": trades_completed + 1
                                 })
-                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time)
+                                save_bot_memory_full(trades_completed, current_slot, grid, ce_contract, pe_contract, bot_state, active_contract, active_entry_price, active_sl, active_target, peak_price, trailing_active, offloaded, lot_size, entry_time, entry_mfi_falling_15m)
                             elif bot_state == "CE_LONG":
                                 if pending_swap_signal != "PE":
                                     pending_swap_signal = "PE"
@@ -2809,11 +2814,13 @@ def run_cloud_bot() -> None:
                     is_any_mfi_falling_ce = (curr_mfi5_ce < prev_mfi5_ce or curr_mfi14_ce < prev_mfi14_ce)
                     is_both_mfi_falling_ce = (curr_mfi5_ce < prev_mfi5_ce and curr_mfi14_ce < prev_mfi14_ce)
 
-                    # 1. Immediate 10pt rejection exit near Upper BB if ANY MFI is falling
-                    is_reentry_ub_10pt_rejection_ce = is_reentry_active_ce and is_near_or_above_ub_ce and is_any_mfi_falling_ce and (live_ce_ltp <= peak_price - 10.0)
+                    # 1. Strict Exit when both 15 min MFIs fall rather than waiting for SL
+                    is_reentry_dual_mfi_fall_exit_ce = is_reentry_active_ce and is_both_mfi_falling_ce
 
-                    # 2. Next candle opening exit if near Upper BB and BOTH MFIs fall
-                    is_reentry_ub_cross_fall_ce = (is_reentry_active_ce and is_near_or_above_ub_ce and is_both_mfi_falling_ce) or is_reentry_ub_10pt_rejection_ce
+                    # 2. Strict Exit if ANY MFI falling in 15 min when price already near Upper Bollinger Band
+                    is_reentry_ub_any_mfi_fall_ce = is_reentry_active_ce and is_near_or_above_ub_ce and is_any_mfi_falling_ce
+
+                    is_reentry_ub_cross_fall_ce = is_reentry_dual_mfi_fall_exit_ce or is_reentry_ub_any_mfi_fall_ce
 
                     # Rule #3 Specific Exit: For Breakout Entry - Exit if 15m MFI5=100 and MFI14 is falling or 3m MFI fall >1pt after overbought
                     is_breakout_mfi100_fall_ce = ("Breakout" in entry_type_str_ce if 'entry_type_str_ce' in locals() else False) and (curr_mfi5_ce >= 100.0 and curr_mfi14_ce < prev_mfi14_ce)
@@ -2828,7 +2835,14 @@ def run_cloud_bot() -> None:
                     if ("Post-Breakdown" in entry_type_str_ce if 'entry_type_str_ce' in locals() else False) and (curr_mfi5_ce > prev_mfi5_ce and curr_mfi14_ce > prev_mfi14_ce):
                         active_sl = max(active_sl, active_entry_price - 20.0)
 
-                    is_mfi_exit_triggered_ce = is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_breakout_mfi100_fall_ce or is_breakout_3m_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce
+                    # Rule: Exit on same candle closing if 15 min any MFI was falling at entry time and price crossed Upper BB with MFI falling
+                    res_bb_ce_check = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
+                    ub_price_ce = res_bb_ce_check[1] if (res_bb_ce_check and res_bb_ce_check[1]) else grid.ce_leg.target_epm
+                    is_ub_crossed_ce = (peak_price >= ub_price_ce) or (live_ce_ltp >= ub_price_ce)
+                    is_mfi_falling_now_ce = (curr_mfi5_ce < prev_mfi5_ce) or (curr_mfi14_ce < prev_mfi14_ce)
+                    is_same_candle_ub_mfi_fall_exit_ce = entry_mfi_falling_15m and is_ub_crossed_ce and is_mfi_falling_now_ce
+
+                    is_mfi_exit_triggered_ce = is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_breakout_mfi100_fall_ce or is_breakout_3m_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce or is_same_candle_ub_mfi_fall_exit_ce
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_ce_ltp >= surge_target_price)
@@ -3020,11 +3034,13 @@ def run_cloud_bot() -> None:
                     is_any_mfi_falling_pe = (curr_mfi5_pe < prev_mfi5_pe or curr_mfi14_pe < prev_mfi14_pe)
                     is_both_mfi_falling_pe = (curr_mfi5_pe < prev_mfi5_pe and curr_mfi14_pe < prev_mfi14_pe)
 
-                    # 1. Immediate 10pt rejection exit near Upper BB if ANY MFI is falling
-                    is_reentry_ub_10pt_rejection_pe = is_reentry_active_pe and is_near_or_above_ub_pe and is_any_mfi_falling_pe and (live_pe_ltp <= peak_price - 10.0)
+                    # 1. Strict Exit when both 15 min MFIs fall rather than waiting for SL
+                    is_reentry_dual_mfi_fall_exit_pe = is_reentry_active_pe and is_both_mfi_falling_pe
 
-                    # 2. Next candle opening exit if near Upper BB and BOTH MFIs fall
-                    is_reentry_ub_cross_fall_pe = (is_reentry_active_pe and is_near_or_above_ub_pe and is_both_mfi_falling_pe) or is_reentry_ub_10pt_rejection_pe
+                    # 2. Strict Exit if ANY MFI falling in 15 min when price already near Upper Bollinger Band
+                    is_reentry_ub_any_mfi_fall_pe = is_reentry_active_pe and is_near_or_above_ub_pe and is_any_mfi_falling_pe
+
+                    is_reentry_ub_cross_fall_pe = is_reentry_dual_mfi_fall_exit_pe or is_reentry_ub_any_mfi_fall_pe
 
                     # Rule #3 Specific Exit: For Breakout Entry PE - Exit if 15m MFI5=100 and MFI14 is falling or 3m MFI fall >1pt after overbought
                     is_breakout_mfi100_fall_pe = ("Breakout" in entry_type_str_pe if 'entry_type_str_pe' in locals() else False) and (curr_mfi5_pe >= 100.0 and curr_mfi14_pe < prev_mfi14_pe)
@@ -3039,7 +3055,14 @@ def run_cloud_bot() -> None:
                     if ("Post-Breakdown" in entry_type_str_pe if 'entry_type_str_pe' in locals() else False) and (curr_mfi5_pe > prev_mfi5_pe and curr_mfi14_pe > prev_mfi14_pe):
                         active_sl = max(active_sl, active_entry_price - 20.0)
 
-                    is_mfi_exit_triggered_pe = is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_breakout_mfi100_fall_pe or is_breakout_3m_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe
+                    # Rule: Exit on same candle closing if 15 min any MFI was falling at entry time and price crossed Upper BB with MFI falling
+                    res_bb_pe_check = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
+                    ub_price_pe = res_bb_pe_check[1] if (res_bb_pe_check and res_bb_pe_check[1]) else grid.pe_leg.target_epm
+                    is_ub_crossed_pe = (peak_price >= ub_price_pe) or (live_pe_ltp >= ub_price_pe)
+                    is_mfi_falling_now_pe = (curr_mfi5_pe < prev_mfi5_pe) or (curr_mfi14_pe < prev_mfi14_pe)
+                    is_same_candle_ub_mfi_fall_exit_pe = entry_mfi_falling_15m and is_ub_crossed_pe and is_mfi_falling_now_pe
+
+                    is_mfi_exit_triggered_pe = is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_breakout_mfi100_fall_pe or is_breakout_3m_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe or is_same_candle_ub_mfi_fall_exit_pe
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_pe_ltp >= surge_target_price)
