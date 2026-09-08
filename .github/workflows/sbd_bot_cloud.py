@@ -438,31 +438,60 @@ class TelegramCommandListener:
         return None, None
 
 
+def parse_angel_order_response(res: Any) -> tuple[str | None, str]:
+    """Parse Angel One SmartAPI placeOrder response safely. Returns (order_id, error_message)."""
+    if not res:
+        return None, "Empty response from SmartAPI"
+    if isinstance(res, str) and res.strip():
+        return res.strip(), ""
+    if isinstance(res, dict):
+        status = res.get("status")
+        if status is True and res.get("data"):
+            data = res["data"]
+            if isinstance(data, dict):
+                oid = str(data.get("orderid") or data.get("order_id") or "").strip()
+                if oid:
+                    return oid, ""
+            elif isinstance(data, str) and data.strip():
+                return data.strip(), ""
+        err_msg = str(res.get("message") or res.get("errorcode") or res)
+        return None, err_msg
+    return None, str(res)
+
+
 def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
-    """Submit real Market Order to Angel One SmartAPI."""
-    try:
-        order_params = {
-            "variety": "NORMAL",
-            "tradingsymbol": trading_symbol,
-            "symboltoken": symbol_token,
-            "transactiontype": transaction_type,
-            "exchange": "BFO",
-            "ordertype": "MARKET",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "price": "0",
-            "squareoff": "0",
-            "stoploss": "0",
-            "quantity": str(quantity),
-        }
-        order_id = smart_api.placeOrder(order_params)
-        logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s | Order ID: %s", transaction_type, quantity, trading_symbol, order_id)
-        send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}*\nQuantity: *{quantity}*\nOrder ID: `{order_id}`")
-        return order_id
-    except Exception as exc:
-        logger.error("❌ Real Order Submission Failed: %s", exc)
-        send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol}: {exc}")
-        return None
+    """Submit real Market Order to Angel One SmartAPI with product type fallback and robust error handling."""
+    qty_val = max(1, int(quantity))
+    for product_type in ("INTRADAY", "CARRYFORWARD"):
+        try:
+            order_params = {
+                "variety": "NORMAL",
+                "tradingsymbol": str(trading_symbol).strip(),
+                "symboltoken": str(symbol_token).strip(),
+                "transactiontype": transaction_type.upper(),
+                "exchange": "BFO",
+                "ordertype": "MARKET",
+                "producttype": product_type,
+                "duration": "DAY",
+                "price": "0",
+                "squareoff": "0",
+                "stoploss": "0",
+                "quantity": str(qty_val),
+            }
+            res = smart_api.placeOrder(order_params)
+            order_id, err_msg = parse_angel_order_response(res)
+            if order_id:
+                logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s (%s) | Order ID: %s", transaction_type, qty_val, trading_symbol, product_type, order_id)
+                send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}*\nQuantity: *{qty_val}*\nOrder ID: `{order_id}`")
+                return order_id
+            else:
+                logger.warning("⚠️ SmartAPI Order rejected with producttype=%s: %s", product_type, err_msg)
+        except Exception as exc:
+            logger.warning("⚠️ Exception submitting order with producttype=%s: %s", product_type, exc)
+    
+    logger.error("❌ Real Order Submission Failed for %s %d %s", transaction_type, qty_val, trading_symbol)
+    send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol}. Check Angel One account permissions.")
+    return None
 
 
 def send_telegram_voice_alert(message: str) -> None:
@@ -805,7 +834,7 @@ def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str)
     """
     try:
         now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(minutes=45)
+        from_dt = now_dt - timedelta(days=3)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -813,7 +842,7 @@ def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str)
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if candles:
@@ -833,7 +862,7 @@ def get_15m_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 
     """
     try:
         now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(minutes=15 * (period + 10))
+        from_dt = now_dt - timedelta(days=7)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -841,7 +870,7 @@ def get_15m_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= period + 1:
@@ -887,7 +916,7 @@ def get_1h_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 5
     """
     try:
         now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(hours=period + 10)
+        from_dt = now_dt - timedelta(days=10)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -895,7 +924,7 @@ def get_1h_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 5
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= period + 1:
@@ -948,7 +977,7 @@ def get_weekly_open_price(smart_api: Any) -> float:
             "fromdate": from_str,
             "todate": to_str
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if candles and len(candles[0]) >= 2:
@@ -974,17 +1003,8 @@ def get_mfi_multi_period(smart_api: Any, exchange: str, symbol_token: str, timef
     
     try:
         now_dt = datetime.now(IST)
-        if timeframe == "FIFTEEN_MINUTE":
-            mins = 15
-        elif timeframe == "THIRTY_MINUTE":
-            mins = 30
-        elif timeframe == "ONE_HOUR":
-            mins = 60
-        else:
-            mins = 1
-            
-        # We need enough candles for max_period and prev_prev check (so at least max_period + 15)
-        from_dt = now_dt - timedelta(minutes=mins * (max_period + 15))
+        lookback_days = 10 if timeframe in ("THIRTY_MINUTE", "ONE_HOUR") else 7
+        from_dt = now_dt - timedelta(days=lookback_days)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -992,7 +1012,7 @@ def get_mfi_multi_period(smart_api: Any, exchange: str, symbol_token: str, timef
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= 3:
@@ -1057,7 +1077,7 @@ def get_3m_bollinger_bands(smart_api: Any, exchange: str, symbol_token: str, per
     """
     try:
         now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(minutes=3 * (period + 10))
+        from_dt = now_dt - timedelta(days=2)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -1065,7 +1085,7 @@ def get_3m_bollinger_bands(smart_api: Any, exchange: str, symbol_token: str, per
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= period:
@@ -1096,7 +1116,7 @@ def check_green_breakout_structure(smart_api: Any, exchange: str, symbol_token: 
     """Identify sustainable breakout: consecutive green candles OR a breach of the prior high with a green body close."""
     try:
         now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(minutes=60)
+        from_dt = now_dt - timedelta(days=2)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -1288,7 +1308,7 @@ def get_current_1m_candles(smart_api: Any, exchange: str, symbol_token: str, cou
     """
     try:
         now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(minutes=count_mins)
+        from_dt = now_dt - timedelta(days=1)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -1296,7 +1316,7 @@ def get_current_1m_candles(smart_api: Any, exchange: str, symbol_token: str, cou
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             return res["data"]
     except Exception as e:
@@ -1525,7 +1545,7 @@ def get_current_5m_candles(smart_api: Any, exchange: str, symbol_token: str) -> 
     """
     try:
         now_dt = datetime.now(IST)
-        from_dt = now_dt - timedelta(minutes=30)
+        from_dt = now_dt - timedelta(days=2)
         params = {
             "exchange": exchange,
             "symboltoken": symbol_token,
@@ -1533,7 +1553,7 @@ def get_current_5m_candles(smart_api: Any, exchange: str, symbol_token: str) -> 
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = smart_api.getCandle(params)
+        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             return res["data"]
     except Exception as e:
@@ -1563,56 +1583,72 @@ def check_active_position_qty(smart_api: Any, symbol_token: str) -> int | None:
 def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str, quantity: int, ltp: float) -> Any:
     """Submit a MARKET sell order first. If it fails, immediately place a LIMIT sell order
     at a lower price (LTP - 10 points) to guarantee immediate execution as a marketable limit order.
+    Supports product type fallback (INTRADAY / CARRYFORWARD).
     """
-    # 1. Try Market Order
-    try:
-        order_params = {
-            "variety": "NORMAL",
-            "tradingsymbol": trading_symbol,
-            "symboltoken": symbol_token,
-            "transactiontype": "SELL",
-            "exchange": "BFO",
-            "ordertype": "MARKET",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "price": "0",
-            "squareoff": "0",
-            "stoploss": "0",
-            "quantity": str(quantity),
-        }
-        order_id = smart_api.placeOrder(order_params)
-        if order_id:
-            logger.info("⚡ [MARKET SELL ORDER SUCCESS] Order ID: %s", order_id)
-            return order_id
-    except Exception as exc:
-        logger.warning("Market sell failed, attempting failsafe Limit sell: %s", exc)
+    qty_val = max(1, int(quantity))
     
-    # 2. Try Failsafe Limit Order (Sell at LTP - 10 points to guarantee execution)
-    try:
-        limit_price = max(2.0, float(ltp) - 10.0)
-        limit_price_str = f"{limit_price:.2f}"
-        
-        order_params = {
-            "variety": "NORMAL",
-            "tradingsymbol": trading_symbol,
-            "symboltoken": symbol_token,
-            "transactiontype": "SELL",
-            "exchange": "BFO",
-            "ordertype": "LIMIT",
-            "producttype": "INTRADAY",
-            "duration": "DAY",
-            "price": limit_price_str,
-            "squareoff": "0",
-            "stoploss": "0",
-            "quantity": str(quantity),
-        }
-        order_id = smart_api.placeOrder(order_params)
-        logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] Price: %s | Order ID: %s", limit_price_str, order_id)
-        return order_id
-    except Exception as exc:
-        logger.error("❌ Failsafe Sell Failed: %s", exc)
-        send_mobile_alert(f"⚠️ *CRITICAL: SELL ORDER FAILED*\nCould not execute sell for {trading_symbol}. Please close manually!")
-        return None
+    # 1. Try Market Sell Order with product type fallback
+    for product_type in ("INTRADAY", "CARRYFORWARD"):
+        try:
+            order_params = {
+                "variety": "NORMAL",
+                "tradingsymbol": str(trading_symbol).strip(),
+                "symboltoken": str(symbol_token).strip(),
+                "transactiontype": "SELL",
+                "exchange": "BFO",
+                "ordertype": "MARKET",
+                "producttype": product_type,
+                "duration": "DAY",
+                "price": "0",
+                "squareoff": "0",
+                "stoploss": "0",
+                "quantity": str(qty_val),
+            }
+            res = smart_api.placeOrder(order_params)
+            order_id, err_msg = parse_angel_order_response(res)
+            if order_id:
+                logger.info("⚡ [MARKET SELL ORDER SUCCESS] (%s) | Order ID: %s", product_type, order_id)
+                send_mobile_alert(f"🔴 *SELL ORDER EXECUTED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nOrder ID: `{order_id}`")
+                return order_id
+            else:
+                logger.warning("⚠️ Market sell rejected with producttype=%s: %s", product_type, err_msg)
+        except Exception as exc:
+            logger.warning("⚠️ Exception on market sell with producttype=%s: %s", product_type, exc)
+    
+    # 2. Try Failsafe Limit Sell Order (Sell at LTP - 10 points to guarantee execution)
+    limit_price = max(2.0, float(ltp) - 10.0)
+    limit_price_str = f"{limit_price:.2f}"
+    
+    for product_type in ("INTRADAY", "CARRYFORWARD"):
+        try:
+            order_params = {
+                "variety": "NORMAL",
+                "tradingsymbol": str(trading_symbol).strip(),
+                "symboltoken": str(symbol_token).strip(),
+                "transactiontype": "SELL",
+                "exchange": "BFO",
+                "ordertype": "LIMIT",
+                "producttype": product_type,
+                "duration": "DAY",
+                "price": limit_price_str,
+                "squareoff": "0",
+                "stoploss": "0",
+                "quantity": str(qty_val),
+            }
+            res = smart_api.placeOrder(order_params)
+            order_id, err_msg = parse_angel_order_response(res)
+            if order_id:
+                logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] (%s) Price: %s | Order ID: %s", product_type, limit_price_str, order_id)
+                send_mobile_alert(f"🔴 *FAILSAFE LIMIT SELL PLACED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nPrice: ₹{limit_price_str}\nOrder ID: `{order_id}`")
+                return order_id
+            else:
+                logger.warning("⚠️ Limit sell rejected with producttype=%s: %s", product_type, err_msg)
+        except Exception as exc:
+            logger.warning("⚠️ Exception on limit sell with producttype=%s: %s", product_type, exc)
+            
+    logger.error("❌ Failsafe Sell Failed for %s %d Qty", trading_symbol, qty_val)
+    send_mobile_alert(f"⚠️ *CRITICAL: SELL ORDER FAILED*\nCould not execute sell for {trading_symbol}. Please close manually!")
+    return None
 
 
 def run_cloud_bot() -> None:
@@ -2530,32 +2566,12 @@ def run_cloud_bot() -> None:
                                         lot_size = base_lot_size + 2
                                         active_sl_ce = live_ce_ltp - 20.0
                                         entry_type_str_ce = f"CE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
-                                    elif is_post_breakdown_entry_ce:
-                                        ce_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_ce = live_ce_ltp - 20.0
-                                        entry_type_str_ce = f"CE Post-Breakdown Oversold Bounce Entry (MFI14={mfi14_15m:.1f}, MFI5={mfi5_15m:.1f} | SL-20)"
-                                    elif is_swing_low_retest_entry_ce:
-                                        ce_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_ce = max(c_low_15m - 5.0, live_ce_ltp - 20.0)
-                                        entry_type_str_ce = f"CE Swing Low First Breakout Retest Entry (MFI14={mfi14_15m:.1f} | SL: ₹{active_sl_ce:.2f})"
                                     elif is_breakout_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
                                         active_sl_ce = live_ce_ltp - 20.0
                                         entry_type_str_ce = f"CE Previous High Breakout Momentum Entry (MFI14={mfi14_15m:.1f} | SL-20)"
-                                    elif is_reentry_ce:
-                                        ce_entry_signal = True
-                                        lot_size = base_lot_size
-                                        active_sl_ce = live_ce_ltp - 20.0
-                                        entry_type_str_ce = f"CE MB Consolidation Re-Entry (MFI14={mfi14_15m:.1f}, MFI5={mfi5_15m:.1f} | SL-20)"
-                                    elif is_30m_mfi_option_ce:
-                                        ce_entry_signal = True
-                                        lot_size = base_lot_size
                                         active_sl_ce = live_ce_ltp - 20.0
                                         entry_type_str_ce = f"CE 30m Dual MFI Secondary Reversal Option (MFI5={mfi5_30m:.1f}, MFI14={mfi14_30m:.1f} | SL-20)"
                                     elif is_direction_aligned_ce and is_clean_initial_entry_ce:
@@ -2749,18 +2765,6 @@ def run_cloud_bot() -> None:
                                         lot_size = base_lot_size + 2
                                         active_sl_pe = live_pe_ltp - 20.0
                                         entry_type_str_pe = f"PE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
-                                    elif is_post_breakdown_entry_pe:
-                                        pe_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_pe = live_pe_ltp - 20.0
-                                        entry_type_str_pe = f"PE Post-Breakdown Oversold Bounce Entry (MFI14={mfi14_15m_pe:.1f}, MFI5={mfi5_15m_pe:.1f} | SL-20)"
-                                    elif is_swing_low_retest_entry_pe:
-                                        pe_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_pe = max(p_low_15m - 5.0, live_pe_ltp - 20.0)
-                                        entry_type_str_pe = f"PE Swing Low First Breakout Retest Entry (MFI14={mfi14_15m_pe:.1f} | SL: ₹{active_sl_pe:.2f})"
                                     elif is_breakout_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
@@ -2770,12 +2774,6 @@ def run_cloud_bot() -> None:
                                         else:
                                             active_sl_pe = live_pe_ltp - 20.0
                                         entry_type_str_pe = f"PE Previous High Breakout Momentum Entry (MFI14={mfi14_15m_pe:.1f} | SL: ₹{active_sl_pe:.2f})"
-                                    elif is_reentry_pe:
-                                        pe_entry_signal = True
-                                        lot_size = base_lot_size
-                                        active_sl_pe = max(p_low_15m - 5.0, live_pe_ltp - 20.0)
-                                        entry_type_str_pe = f"PE MB Consolidation Re-Entry (MFI14={mfi14_15m_pe:.1f}, MFI5={mfi5_15m_pe:.1f} | SL: ₹{active_sl_pe:.2f})"
-                                    elif is_30m_mfi_option_pe:
                                         pe_entry_signal = True
                                         lot_size = base_lot_size
                                         active_sl_pe = live_pe_ltp - 20.0
