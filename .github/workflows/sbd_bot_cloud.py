@@ -2339,10 +2339,10 @@ def run_cloud_bot() -> None:
                         ce_in_35_range = True
                         pe_in_35_range = True
                         
+                        weekly_open = get_weekly_open_price(smart_api)
+                        
                         # Priority check based on price action and momentum
                         check_order = ["CE", "PE"] if (live_spot >= weekly_open) else ["PE", "CE"]
-                        
-                        weekly_open = get_weekly_open_price(smart_api)
                         
                         ce_entry_signal = False
                         active_sl_ce = live_ce_ltp - 20.0
