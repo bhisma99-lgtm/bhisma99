@@ -719,9 +719,17 @@ def create_authenticated_smartapi_client() -> Any:
         raise RuntimeError("Missing Angel One secret(s): " + ", ".join(missing))
 
     import pyotp
+    import requests
     from SmartApi import SmartConnect
 
+    try:
+        pub_ip = requests.get("https://api.ipify.org", timeout=3.0).text.strip()
+    except Exception:
+        pub_ip = "117.99.43.62"
+
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
+    smart_api.clientPublicIP = pub_ip
+    smart_api.clientLocalIP = "127.0.0.1"
     login_response = smart_api.generateSession(
         os.environ["ANGEL_ONE_CLIENT_CODE"],
         os.environ["ANGEL_ONE_PASSWORD"],
@@ -1003,7 +1011,7 @@ def get_mfi_multi_period(smart_api: Any, exchange: str, symbol_token: str, timef
     
     try:
         now_dt = datetime.now(IST)
-        lookback_days = 10 if timeframe in ("THIRTY_MINUTE", "ONE_HOUR") else 7
+        lookback_days = 10 if timeframe in ("THIRTY_MINUTE", "ONE_HOUR") else (1 if timeframe == "ONE_MINUTE" else 7)
         from_dt = now_dt - timedelta(days=lookback_days)
         params = {
             "exchange": exchange,
@@ -1366,6 +1374,7 @@ def check_5m_breakout_and_reversal(smart_api: Any, token: str, live_ltp: float) 
 
 def load_delta_map() -> dict[str, dict[str, Any]]:
     """Load official Angel One Script Master metadata map from local files if available."""
+    import os, json
     for path in ("delta_map.json", "../../delta_map.json", "0_sensex_options_delta_1786941098090.json", "../../0_sensex_options_delta_1786941098090.json"):
         if os.path.exists(path):
             try:
@@ -1972,6 +1981,8 @@ def run_cloud_bot() -> None:
     bot_state = "IDLE"  # Options: "IDLE", "CE_LONG", "PE_LONG"
     trades_completed = 0
     max_trades_per_day = 2
+    ce_sl_hit_today = False
+    pe_sl_hit_today = False
     active_contract = None
     active_entry_price = 0.0
     active_sl = 0.0
@@ -2182,7 +2193,9 @@ def run_cloud_bot() -> None:
                         sys.stdout.write("\n")
                         logger.info("🔄 [SWAP] User confirmed position swap to %s via Telegram!", pending_swap_signal)
                         
-                        exit_price = live_ce_ltp if bot_state == "CE_LONG" else live_pe_ltp
+                        swap_ce_price = ce_contract.ltp if ce_contract else 0.0
+                        swap_pe_price = pe_contract.ltp if pe_contract else 0.0
+                        exit_price = swap_ce_price if bot_state == "CE_LONG" else swap_pe_price
                         logger.info("🔴 [SWAP EXIT] Exiting active %s position at ₹%.2f", active_contract.trading_symbol, exit_price)
                         send_mobile_alert(f"🔴 *SWAP EXIT: EXITING CURRENT POSITION*\n\nClosing *{active_contract.trading_symbol}* at ₹{exit_price:.2f} to switch trades.")
                         
@@ -2201,7 +2214,7 @@ def run_cloud_bot() -> None:
                         
                         bot_state = f"{pending_swap_signal}_LONG"
                         active_contract = pending_swap_contract
-                        active_entry_price = live_ce_ltp if pending_swap_signal == "CE" else live_pe_ltp
+                        active_entry_price = swap_ce_price if pending_swap_signal == "CE" else swap_pe_price
                         active_target = pending_swap_target
                         active_sl = pending_swap_sl
                         entry_time = datetime.now(IST)
@@ -2396,6 +2409,9 @@ def run_cloud_bot() -> None:
                         
                         for opt_type in check_order:
                             if opt_type == "CE" and not ce_entry_signal and not pe_entry_signal:
+                                if ce_sl_hit_today:
+                                    logger.info("⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.")
+                                    continue
                                 c_open_15m, c_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", ce_contract.symbol_token)
                                 if c_open_15m is None:
                                     c_open_15m = live_ce_ltp
@@ -2593,6 +2609,9 @@ def run_cloud_bot() -> None:
                                         entry_type_str_ce = f"CE Initial MFI Bounce (5=0 & 14<={mfi14_15m:.1f} | SL-20 from Entry)"
 
                             elif opt_type == "PE" and not ce_entry_signal and not pe_entry_signal:
+                                if pe_sl_hit_today:
+                                    logger.info("⛔ [PE SIDE LOCKED] PE Stop Loss was hit today. Skipping fresh PE entries.")
+                                    continue
                                 p_open_15m, p_low_15m = get_current_15m_candle_ohl(smart_api, "BFO", pe_contract.symbol_token)
                                 if p_open_15m is None:
                                     p_open_15m = live_pe_ltp
@@ -2816,6 +2835,10 @@ def run_cloud_bot() -> None:
                                 offloaded = False
                                 
                                 sys.stdout.write("\n")
+                                curr_mfi5_ce = mfi5_15m
+                                prev_mfi5_ce = prev_mfi5_15m
+                                curr_mfi14_ce = mfi14_15m
+                                prev_mfi14_ce = prev_mfi14_15m
                                 is_any_mfi_falling_at_entry_ce = (curr_mfi5_ce < prev_mfi5_ce) or (curr_mfi14_ce < prev_mfi14_ce)
                                 entry_mfi_falling_15m = is_any_mfi_falling_at_entry_ce
                                 logger.info("🟢 [ENTRY CE SIGNAL] CE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f) | Diagnostic: 15m MFI(5)=%.1f (prev %.1f), MFI(14)=%.1f (prev %.1f) [Falling at Entry: %s]", live_ce_ltp, entry_type_str_ce, active_sl, active_target, curr_mfi5_ce, prev_mfi5_ce, curr_mfi14_ce, prev_mfi14_ce, is_any_mfi_falling_at_entry_ce)
@@ -2875,6 +2898,10 @@ def run_cloud_bot() -> None:
                                 offloaded = False
                                 
                                 sys.stdout.write("\n")
+                                curr_mfi5_pe = mfi5_15m_pe
+                                prev_mfi5_pe = prev_mfi5_15m_pe
+                                curr_mfi14_pe = mfi14_15m_pe
+                                prev_mfi14_pe = prev_mfi14_15m_pe
                                 is_any_mfi_falling_at_entry_pe = (curr_mfi5_pe < prev_mfi5_pe) or (curr_mfi14_pe < prev_mfi14_pe)
                                 entry_mfi_falling_15m = is_any_mfi_falling_at_entry_pe
                                 logger.info("🟢 [ENTRY PE SIGNAL] PE LTP ₹%.2f triggered via %s (SL: ₹%.2f, Target: ₹%.2f) | Diagnostic: 15m MFI(5)=%.1f (prev %.1f), MFI(14)=%.1f (prev %.1f) [Falling at Entry: %s]", live_pe_ltp, entry_type_str_pe, active_sl, active_target, curr_mfi5_pe, prev_mfi5_pe, curr_mfi14_pe, prev_mfi14_pe, is_any_mfi_falling_at_entry_pe)
@@ -2952,15 +2979,15 @@ def run_cloud_bot() -> None:
                             low=c_low_15m,
                             close=live_ce_ltp,
                             volume=1.0,
-                            mfi5_15m=curr_mfi5_ce,
-                            mfi14_15m=curr_mfi14_ce,
-                            prev_mfi5_15m=prev_mfi5_ce,
-                            prev_mfi14_15m=prev_mfi14_ce,
+                            mfi5_15m=mfi5_15m,
+                            mfi14_15m=mfi14_15m,
+                            prev_mfi5_15m=prev_mfi5_15m,
+                            prev_mfi14_15m=prev_mfi14_15m,
                             mfi5_30m=mfi5_30m if 'mfi5_30m' in locals() else 50.0,
                             mfi14_30m=mfi14_30m if 'mfi14_30m' in locals() else 50.0,
                             prev_mfi5_30m=prev_mfi5_30m if 'prev_mfi5_30m' in locals() else 50.0,
                             prev_mfi14_30m=prev_mfi14_30m if 'prev_mfi14_30m' in locals() else 50.0,
-                            prev_prev_mfi14_30m=prev_prev_mfi14_30m_ce if 'prev_prev_mfi14_30m_ce' in locals() else (prev_mfi14_30m if 'prev_mfi14_30m' in locals() else 50.0),
+                            prev_prev_mfi14_30m=prev_prev_mfi14_30m if 'prev_prev_mfi14_30m' in locals() else (prev_mfi14_30m if 'prev_mfi14_30m' in locals() else 50.0),
                             mfi5_60m=50.0,
                             mfi14_60m=50.0,
                             prev_mfi5_60m=50.0,
@@ -3205,6 +3232,8 @@ def run_cloud_bot() -> None:
                     if live_ce_ltp <= active_sl:
                         exit_state_str = "EXIT_SL" if not trailing_active else "EXIT_TSL"
                         exit_title_str = "STOP LOSS HIT" if not trailing_active else "TRAILING SL HIT (PROFIT BOOKED!)"
+                        if exit_state_str == "EXIT_SL":
+                            ce_sl_hit_today = True
                         
                         logger.info("🔴 [CE EXIT - %s] CE LTP ₹%.2f hit SL ₹%.2f", exit_title_str, live_ce_ltp, active_sl)
                         send_mobile_alert(f"🔴 *CE EXIT - {exit_title_str}*\n\n"
@@ -3327,15 +3356,15 @@ def run_cloud_bot() -> None:
                             low=p_low_15m,
                             close=live_pe_ltp,
                             volume=1.0,
-                            mfi5_15m=curr_mfi5_pe,
-                            mfi14_15m=curr_mfi14_pe,
-                            prev_mfi5_15m=prev_mfi5_pe,
-                            prev_mfi14_15m=prev_mfi14_pe,
+                            mfi5_15m=mfi5_15m_pe,
+                            mfi14_15m=mfi14_15m_pe,
+                            prev_mfi5_15m=prev_mfi5_15m_pe,
+                            prev_mfi14_15m=prev_mfi14_15m_pe,
                             mfi5_30m=mfi5_30m_pe if 'mfi5_30m_pe' in locals() else (mfi5_30m if 'mfi5_30m' in locals() else 50.0),
                             mfi14_30m=mfi14_30m_pe if 'mfi14_30m_pe' in locals() else (mfi14_30m if 'mfi14_30m' in locals() else 50.0),
                             prev_mfi5_30m=prev_mfi5_30m_pe if 'prev_mfi5_30m_pe' in locals() else (prev_mfi5_30m if 'prev_mfi5_30m' in locals() else 50.0),
                             prev_mfi14_30m=prev_mfi14_30m_pe if 'prev_mfi14_30m_pe' in locals() else (prev_mfi14_30m if 'prev_mfi14_30m' in locals() else 50.0),
-                            prev_prev_mfi14_30m=prev_prev_mfi14_30m_pe if 'prev_prev_mfi14_30m_pe' in locals() else (prev_prev_mfi14_30m_ce if 'prev_prev_mfi14_30m_ce' in locals() else 50.0),
+                            prev_prev_mfi14_30m=prev_prev_mfi14_30m_pe if 'prev_prev_mfi14_30m_pe' in locals() else (prev_mfi14_30m_pe if 'prev_mfi14_30m_pe' in locals() else 50.0),
                             mfi5_60m=50.0,
                             mfi14_60m=50.0,
                             prev_mfi5_60m=50.0,
@@ -3573,6 +3602,8 @@ def run_cloud_bot() -> None:
                     if live_pe_ltp <= active_sl:
                         exit_state_str = "EXIT_SL" if not trailing_active else "EXIT_TSL"
                         exit_title_str = "STOP LOSS HIT" if not trailing_active else "TRAILING SL HIT (PROFIT BOOKED!)"
+                        if exit_state_str == "EXIT_SL":
+                            pe_sl_hit_today = True
                         
                         logger.info("🔴 [PE EXIT - %s] PE LTP ₹%.2f hit SL ₹%.2f", exit_title_str, live_pe_ltp, active_sl)
                         send_mobile_alert(f"🔴 *PE EXIT - {exit_title_str}*\n\n"
