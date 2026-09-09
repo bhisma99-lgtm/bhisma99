@@ -433,6 +433,12 @@ class TelegramCommandListener:
                                     except ValueError:
                                         pass
                                 return "SL", price
+                            elif first_word == "REENTRY":
+                                sub = parts[1] if len(parts) > 1 else "ON"
+                                if sub in ("ON", "TRUE", "ENABLE", "1"):
+                                    return "REENTRY ON", None
+                                else:
+                                    return "REENTRY OFF", None
         except Exception:
             pass
         return None, None
@@ -2013,7 +2019,7 @@ def run_cloud_bot() -> None:
     pending_swap_time = None
 
     # Trailing Stop-Loss Variables
-    allow_reentry_live = False
+    allow_reentry_live = True
     initial_entry_happened = False
     recovery_reentry_eligible = False
     recovery_reentry_done = False
