@@ -84,7 +84,7 @@ if os.name == "nt":
 ENABLE_IN_FLIGHT_HANDOVER: bool = True  # Dynamic in-flight strategy switching toggle (Default: True)
 MIN_EV_HANDOVER_DELTA: float = 4.0      # Minimum EV delta improvement (+4.0 pts) required to approve handover
 
-# Import Modular 7-Strategy Suite & State-Machine Handover Architecture
+# Import Modular 3-Strategy Suite with Dynamic In-Flight Handover
 try:
     from state_machine_handover_engine import (
         BaseStrategy,
@@ -125,23 +125,23 @@ except ImportError:
 
 
 def map_entry_type_to_strategy_name(entry_type_str: str) -> str:
-    """Map human-readable entry signal descriptions to standardized Strategy names."""
+    """Map human-readable entry signal descriptions to standardized Strategy names in Modular 3-Strategy Suite."""
     if not entry_type_str:
-        return "Initial Dual MFI Lower Band Bounce"
-    if "Post-Breakdown" in entry_type_str:
-        return "Post-Breakdown Oversold Bounce Entry"
-    elif "Swing Low" in entry_type_str:
+        return "Previous High Breakout Momentum Entry"
+    if "Recovery" in entry_type_str or "Post-SL" in entry_type_str:
+        return "One-Time Post-SL Recovery Re-Entry (+2 Lots)"
+    elif "Swing Low" in entry_type_str or "SWING" in entry_type_str or "Retest" in entry_type_str:
         return "Dynamic Swing Low First Breakout Retest Entry"
     elif "Breakout" in entry_type_str or "Previous High" in entry_type_str:
         return "Previous High Breakout Momentum Entry"
+    elif "Post-Breakdown" in entry_type_str:
+        return "Post-Breakdown Oversold Bounce Entry"
     elif "MB Consolidation" in entry_type_str or ("Re-Entry" in entry_type_str and "Recovery" not in entry_type_str):
         return "MFI(14) Trend Re-Entry (MB Consolidation)"
-    elif "Recovery" in entry_type_str or "Post-SL" in entry_type_str:
-        return "One-Time Post-SL Recovery Re-Entry (+2 Lots)"
     elif "Secondary Reversal" in entry_type_str or "30m Dual MFI" in entry_type_str:
         return "30m Dual MFI Secondary Reversal Option"
     else:
-        return "Initial Dual MFI Lower Band Bounce"
+        return "Previous High Breakout Momentum Entry"
 
 
 # =========================================================================
@@ -1985,14 +1985,10 @@ def run_cloud_bot() -> None:
     loop_counter = 0
     is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
 
-    # Instantiate Modular 7-Strategy Suite & State-Machine Handover Engine
+    # Instantiate Modular 3-Strategy Suite with Dynamic In-Flight Handover
     handover_strategies = [
-        InitialDualMFILowerBandBounceStrategy(),
         PreviousHighBreakoutMomentumStrategy(),
-        DualMFI30mSecondaryReversalStrategy(),
-        MFITrendReentryMBStrategy(),
         PostSLRecoveryReentryStrategy(),
-        PostBreakdownOversoldBounceStrategy(),
         DynamicSwingLowBreakoutRetestStrategy(),
     ]
     handover_engine = StateMachineHandoverEngine(strategies=handover_strategies, min_ev_improvement=MIN_EV_HANDOVER_DELTA)
@@ -2390,6 +2386,13 @@ def run_cloud_bot() -> None:
                         
                         now_time_str = datetime.now(IST).strftime("%H:%M")
                         is_915_opening = (now_time_str <= "09:20")
+
+                        # Rule: Restrict fresh Entry on or after 15:00:00
+                        if now_time_str >= "15:00":
+                            if loop_counter % 20 == 1:
+                                logger.info("⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: %s). Monitoring existing trades.", now_time_str)
+                            time.sleep(5)
+                            continue
                         
                         for opt_type in check_order:
                             if opt_type == "CE" and not ce_entry_signal and not pe_entry_signal:
@@ -2414,6 +2417,7 @@ def run_cloud_bot() -> None:
                                 mfi5_1m = mfis_1m.get(5, 50.0)
                                 mfi14_1m = mfis_1m.get(14, 50.0)
                                 prev_mfi5_1m = prev_mfis_1m.get(5, 50.0)
+                                prev_mfi14_1m = prev_mfis_1m.get(14, 50.0)
 
                                 mfi5_30m = mfis_30m.get(5, 50.0)
                                 mfi14_30m = mfis_30m.get(14, 50.0)
@@ -2566,14 +2570,21 @@ def run_cloud_bot() -> None:
                                         lot_size = base_lot_size + 2
                                         active_sl_ce = live_ce_ltp - 20.0
                                         entry_type_str_ce = f"CE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
+                                    elif is_swing_low_retest_entry_ce:
+                                        ce_entry_signal = True
+                                        initial_entry_happened = True
+                                        lot_size = base_lot_size
+                                        active_sl_ce = max(dynamic_swing_low_ce - 2.0, live_ce_ltp - 20.0)
+                                        entry_type_str_ce = f"CE Dynamic Swing Low First Breakout Retest Entry (Pivot: ₹{dynamic_swing_low_ce:.2f}, MFI14={mfi14_15m:.1f} | SL: ₹{active_sl_ce:.2f})"
                                     elif is_breakout_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
-                                        active_sl_ce = live_ce_ltp - 20.0
-                                        entry_type_str_ce = f"CE Previous High Breakout Momentum Entry (MFI14={mfi14_15m:.1f} | SL-20)"
-                                        active_sl_ce = live_ce_ltp - 20.0
-                                        entry_type_str_ce = f"CE 30m Dual MFI Secondary Reversal Option (MFI5={mfi5_30m:.1f}, MFI14={mfi14_30m:.1f} | SL-20)"
+                                        if (mfi5_15m > prev_mfi5_15m and mfi14_15m > prev_mfi14_15m):
+                                            active_sl_ce = max(c_low_15m - 15.0, live_ce_ltp - 20.0)
+                                        else:
+                                            active_sl_ce = live_ce_ltp - 20.0
+                                        entry_type_str_ce = f"CE Previous High Breakout Momentum Entry (MFI14={mfi14_15m:.1f} | SL: ₹{active_sl_ce:.2f})"
                                     elif is_direction_aligned_ce and is_clean_initial_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
@@ -2603,6 +2614,7 @@ def run_cloud_bot() -> None:
                                 mfi5_1m_pe = mfis_1m_pe.get(5, 50.0)
                                 mfi14_1m_pe = mfis_1m_pe.get(14, 50.0)
                                 prev_mfi5_1m_pe = prev_mfis_1m_pe.get(5, 50.0)
+                                prev_mfi14_1m_pe = prev_mfis_1m_pe.get(14, 50.0)
 
                                 mfi5_30m_pe = mfis_30m_pe.get(5, 50.0)
                                 mfi14_30m_pe = mfis_30m_pe.get(14, 50.0)
@@ -2765,6 +2777,12 @@ def run_cloud_bot() -> None:
                                         lot_size = base_lot_size + 2
                                         active_sl_pe = live_pe_ltp - 20.0
                                         entry_type_str_pe = f"PE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
+                                    elif is_swing_low_retest_entry_pe:
+                                        pe_entry_signal = True
+                                        initial_entry_happened = True
+                                        lot_size = base_lot_size
+                                        active_sl_pe = max(dynamic_swing_low_pe - 2.0, live_pe_ltp - 20.0)
+                                        entry_type_str_pe = f"PE Dynamic Swing Low First Breakout Retest Entry (Pivot: ₹{dynamic_swing_low_pe:.2f}, MFI14={mfi14_15m_pe:.1f} | SL: ₹{active_sl_pe:.2f})"
                                     elif is_breakout_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
@@ -2774,10 +2792,6 @@ def run_cloud_bot() -> None:
                                         else:
                                             active_sl_pe = live_pe_ltp - 20.0
                                         entry_type_str_pe = f"PE Previous High Breakout Momentum Entry (MFI14={mfi14_15m_pe:.1f} | SL: ₹{active_sl_pe:.2f})"
-                                        pe_entry_signal = True
-                                        lot_size = base_lot_size
-                                        active_sl_pe = live_pe_ltp - 20.0
-                                        entry_type_str_pe = f"PE 30m Dual MFI Secondary Reversal Option (MFI5={mfi5_30m_pe:.1f}, MFI14={mfi14_30m_pe:.1f} | SL-20)"
                                     elif is_direction_aligned_pe and is_clean_initial_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
@@ -3026,15 +3040,33 @@ def run_cloud_bot() -> None:
                     is_overbought_or_near_ub_ce = (curr_mfi5_ce >= 80.0 or prev_mfi5_ce >= 80.0 or curr_mfi14_ce >= 70.0) or (peak_price >= grid.ce_leg.target_epm - 10.0 or live_ce_ltp >= grid.ce_leg.target_epm - 10.0)
                     mfi_rising_ce = ((curr_mfi5_ce > prev_mfi5_ce) or (curr_mfi14_ce > prev_mfi14_ce)) and not is_overbought_or_near_ub_ce
 
-                    # Trailing SL: Hold -20 pts from Entry Price whenever MFI is rising (unless in Overbought/Upper BB zone)
-                    if mfi_rising_ce:
-                        active_sl = active_entry_price - 20.0
-                        logger.info("🛡️ [MFI HOLD -20 SL ACTIVE] CE MFI Rising (MFI5: %.1f->%.1f, MFI14: %.1f->%.1f) | Holding SL strictly at ₹%.2f (-20 pts from Entry)", prev_mfi5_ce, curr_mfi5_ce, prev_mfi14_ce, curr_mfi14_ce, active_sl)
-                    elif favorable_gain_ce >= 20.0:
-                        if active_sl < active_entry_price - 7.0:
-                            active_sl = active_entry_price - 7.0
-                            logger.info("🔥 [COST - 7pts TRAILING ACTIVATED] CE moved +%.2f pts in favor and MFI slowed down. SL set to Cost - 7pts ₹%.2f.", favorable_gain_ce, active_sl)
-                            send_mobile_alert(f"🔥 *TRAILING ACTIVATED (+20pt Move)*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to Cost - 7pts: *₹{active_sl:.2f}*")
+                    # Multi-Stage Profit Locking & Trailing SL:
+                    # User Rule: Multi-stage profit locking should start above 40 points (+10 pts -> Entry+3, +18 pts -> Entry+10).
+                    # No trail before 40 points as long as MFI(14) rising in 15 minutes.
+                    is_mfi14_rising_15m_ce = (curr_mfi14_ce > prev_mfi14_ce) or (curr_mfi14_ce >= prev_mfi14_ce and curr_mfi5_ce > prev_mfi5_ce)
+
+                    if is_mfi14_rising_15m_ce:
+                        # No trailing before +40 pts while MFI(14) is rising in 15m. Trail starts above 40 points:
+                        if favorable_gain_ce >= 48.0:
+                            if active_sl < active_entry_price + 18.0:
+                                active_sl = active_entry_price + 18.0
+                                logger.info("🔥 [STAGE 2 TRAILING +48pt Move] CE MFI(14) Rising | SL raised to Entry+18: ₹%.2f", active_sl)
+                        elif favorable_gain_ce >= 40.0:
+                            if active_sl < active_entry_price + 10.0:
+                                active_sl = active_entry_price + 10.0
+                                logger.info("🔥 [STAGE 1 TRAILING +40pt Move] CE MFI(14) Rising | SL raised to Entry+10: ₹%.2f", active_sl)
+                        else:
+                            # Hold initial risk (-20) while MFI(14) is rising below 40 pts
+                            active_sl = max(active_sl, active_entry_price - 20.0)
+                    else:
+                        if favorable_gain_ce >= 40.0:
+                            active_sl = max(active_sl, active_entry_price + 10.0)
+                        elif favorable_gain_ce >= 18.0:
+                            active_sl = max(active_sl, active_entry_price + 10.0)
+                        elif favorable_gain_ce >= 10.0:
+                            active_sl = max(active_sl, active_entry_price + 3.0)
+                        elif favorable_gain_ce >= 20.0:
+                            active_sl = max(active_sl, active_entry_price - 7.0)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
@@ -3102,6 +3134,14 @@ def run_cloud_bot() -> None:
                     is_mfi_falling_now_ce = (curr_mfi5_ce < prev_mfi5_ce) or (curr_mfi14_ce < prev_mfi14_ce)
                     is_same_candle_ub_mfi_fall_exit_ce = entry_mfi_falling_15m and is_ub_crossed_ce and is_mfi_falling_now_ce
 
+                    # Swing Low Breakout / Retest Strategy Specific Exit Rule:
+                    # User Rule: Wait after entry if MFI(14) is rising till Upper Bollinger band price rejection or MFI down near or above Upper Band
+                    is_swing_trade_ce = ("Swing Low" in entry_type_str_ce if 'entry_type_str_ce' in locals() else False) or (active_strategy_name == "Dynamic Swing Low First Breakout Retest Entry")
+                    is_swing_mfi14_rising_ce = (curr_mfi14_ce > prev_mfi14_ce) or (curr_mfi14_ce >= prev_mfi14_ce and curr_mfi5_ce > prev_mfi5_ce)
+                    is_swing_ub_rejection_ce = (live_ce_ltp >= ub_price_ce - 2.0 or peak_price >= ub_price_ce - 2.0) and (live_ce_ltp <= c_open_15m or peak_price - live_ce_ltp >= 5.0)
+                    is_swing_mfi_down_near_ub_ce = (peak_price >= ub_price_ce - 5.0 or live_ce_ltp >= ub_price_ce - 5.0 or curr_mfi14_ce >= 65.0) and (curr_mfi14_ce < prev_mfi14_ce or curr_mfi5_ce < prev_mfi5_ce)
+                    is_swing_exit_ce = is_swing_trade_ce and ((is_swing_mfi14_rising_ce and (is_swing_ub_rejection_ce or is_swing_mfi_down_near_ub_ce) and (live_ce_ltp >= active_entry_price + 8.0 or peak_price >= active_entry_price + 15.0)) or (not is_swing_mfi14_rising_ce and is_both_mfi_falling_ce))
+
                     # Extreme Overbought High Rejection Exit Rule:
                     is_overbought_high_rejection_ce = (curr_mfi14_ce >= 70.0 or curr_mfi5_ce >= 80.0) and (live_ce_ltp >= previous_ce_high or peak_price >= previous_ce_high) and (live_ce_ltp < previous_ce_high or live_ce_ltp <= c_open_15m or peak_price - live_ce_ltp >= 5.0)
 
@@ -3109,7 +3149,7 @@ def run_cloud_bot() -> None:
                     now_time_str_exit = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live = (now_time_str_exit >= "15:25")
 
-                    is_mfi_exit_triggered_ce = is_eod_exit_live or is_overbought_high_rejection_ce or is_breakout_mfi14_or_both_fall_ce or is_breakout_weak_close_retrace_ce or is_breakout_mb_rejection_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_breakout_mfi100_fall_ce or is_breakout_3m_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce or is_same_candle_ub_mfi_fall_exit_ce
+                    is_mfi_exit_triggered_ce = is_eod_exit_live or is_swing_exit_ce or is_overbought_high_rejection_ce or is_breakout_mfi14_or_both_fall_ce or is_breakout_weak_close_retrace_ce or is_breakout_mb_rejection_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_breakout_mfi100_fall_ce or is_breakout_3m_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce or is_same_candle_ub_mfi_fall_exit_ce
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_ce_ltp >= surge_target_price)
@@ -3375,15 +3415,33 @@ def run_cloud_bot() -> None:
                     is_overbought_or_near_ub_pe = (curr_mfi5_pe >= 80.0 or prev_mfi5_pe >= 80.0 or curr_mfi14_pe >= 70.0) or (peak_price >= grid.pe_leg.target_epm - 10.0 or live_pe_ltp >= grid.pe_leg.target_epm - 10.0)
                     mfi_rising_pe = ((curr_mfi5_pe > prev_mfi5_pe) or (curr_mfi14_pe > prev_mfi14_pe)) and not is_overbought_or_near_ub_pe
 
-                    # Trailing SL: Hold -20 pts from Entry Price whenever MFI is rising (unless in Overbought/Upper BB zone)
-                    if mfi_rising_pe:
-                        active_sl = active_entry_price - 20.0
-                        logger.info("🛡️ [MFI HOLD -20 SL ACTIVE] PE MFI Rising (MFI5: %.1f->%.1f, MFI14: %.1f->%.1f) | Holding SL strictly at ₹%.2f (-20 pts from Entry)", prev_mfi5_pe, curr_mfi5_pe, prev_mfi14_pe, curr_mfi14_pe, active_sl)
-                    elif favorable_gain_pe >= 20.0:
-                        if active_sl < active_entry_price - 7.0:
-                            active_sl = active_entry_price - 7.0
-                            logger.info("🔥 [COST - 7pts TRAILING ACTIVATED] PE moved +%.2f pts in favor and MFI slowed down. SL set to Cost - 7pts ₹%.2f.", favorable_gain_pe, active_sl)
-                            send_mobile_alert(f"🔥 *TRAILING ACTIVATED (+20pt Move)*\n\nContract: *{active_contract.trading_symbol}*\nSL raised to Cost - 7pts: *₹{active_sl:.2f}*")
+                    # Multi-Stage Profit Locking & Trailing SL PE:
+                    # User Rule: Multi-stage profit locking should start above 40 points (+10 pts -> Entry+3, +18 pts -> Entry+10).
+                    # No trail before 40 points as long as MFI(14) rising in 15 minutes.
+                    is_mfi14_rising_15m_pe = (curr_mfi14_pe > prev_mfi14_pe) or (curr_mfi14_pe >= prev_mfi14_pe and curr_mfi5_pe > prev_mfi5_pe)
+
+                    if is_mfi14_rising_15m_pe:
+                        # No trailing before +40 pts while MFI(14) is rising in 15m. Trail starts above 40 points:
+                        if favorable_gain_pe >= 48.0:
+                            if active_sl < active_entry_price + 18.0:
+                                active_sl = active_entry_price + 18.0
+                                logger.info("🔥 [STAGE 2 TRAILING +48pt Move PE] MFI(14) Rising | SL raised to Entry+18: ₹%.2f", active_sl)
+                        elif favorable_gain_pe >= 40.0:
+                            if active_sl < active_entry_price + 10.0:
+                                active_sl = active_entry_price + 10.0
+                                logger.info("🔥 [STAGE 1 TRAILING +40pt Move PE] MFI(14) Rising | SL raised to Entry+10: ₹%.2f", active_sl)
+                        else:
+                            # Hold initial risk (-20) while MFI(14) is rising below 40 pts
+                            active_sl = max(active_sl, active_entry_price - 20.0)
+                    else:
+                        if favorable_gain_pe >= 40.0:
+                            active_sl = max(active_sl, active_entry_price + 10.0)
+                        elif favorable_gain_pe >= 18.0:
+                            active_sl = max(active_sl, active_entry_price + 10.0)
+                        elif favorable_gain_pe >= 10.0:
+                            active_sl = max(active_sl, active_entry_price + 3.0)
+                        elif favorable_gain_pe >= 20.0:
+                            active_sl = max(active_sl, active_entry_price - 7.0)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
@@ -3444,6 +3502,14 @@ def run_cloud_bot() -> None:
                     is_mfi_falling_now_pe = (curr_mfi5_pe < prev_mfi5_pe) or (curr_mfi14_pe < prev_mfi14_pe)
                     is_same_candle_ub_mfi_fall_exit_pe = entry_mfi_falling_15m and is_ub_crossed_pe and is_mfi_falling_now_pe
 
+                    # Swing Low Breakout / Retest Strategy Specific Exit Rule PE:
+                    # User Rule: Wait after entry if MFI(14) is rising till Upper Bollinger band price rejection or MFI down near or above Upper Band
+                    is_swing_trade_pe = ("Swing Low" in entry_type_str_pe if 'entry_type_str_pe' in locals() else False) or (active_strategy_name == "Dynamic Swing Low First Breakout Retest Entry")
+                    is_swing_mfi14_rising_pe = (curr_mfi14_pe > prev_mfi14_pe) or (curr_mfi14_pe >= prev_mfi14_pe and curr_mfi5_pe > prev_mfi5_pe)
+                    is_swing_ub_rejection_pe = (live_pe_ltp >= ub_price_pe - 2.0 or peak_price >= ub_price_pe - 2.0) and (live_pe_ltp <= p_open_15m or peak_price - live_pe_ltp >= 5.0)
+                    is_swing_mfi_down_near_ub_pe = (peak_price >= ub_price_pe - 5.0 or live_pe_ltp >= ub_price_pe - 5.0 or curr_mfi14_pe >= 65.0) and (curr_mfi14_pe < prev_mfi14_pe or curr_mfi5_pe < prev_mfi5_pe)
+                    is_swing_exit_pe = is_swing_trade_pe and ((is_swing_mfi14_rising_pe and (is_swing_ub_rejection_pe or is_swing_mfi_down_near_ub_pe) and (live_pe_ltp >= active_entry_price + 8.0 or peak_price >= active_entry_price + 15.0)) or (not is_swing_mfi14_rising_pe and (curr_mfi5_pe < prev_mfi5_pe and curr_mfi14_pe < prev_mfi14_pe)))
+
                     # Extreme Overbought High Rejection Exit Rule PE:
                     is_overbought_high_rejection_pe = (curr_mfi14_pe >= 70.0 or curr_mfi5_pe >= 80.0) and (live_pe_ltp >= previous_pe_high or peak_price >= previous_pe_high) and (live_pe_ltp < previous_pe_high or live_pe_ltp <= p_open_15m or peak_price - live_pe_ltp >= 5.0)
 
@@ -3451,7 +3517,7 @@ def run_cloud_bot() -> None:
                     now_time_str_exit_pe = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live_pe = (now_time_str_exit_pe >= "15:25")
 
-                    is_mfi_exit_triggered_pe = is_eod_exit_live_pe or is_overbought_high_rejection_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_breakout_mfi100_fall_pe or is_breakout_3m_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe or is_same_candle_ub_mfi_fall_exit_pe
+                    is_mfi_exit_triggered_pe = is_eod_exit_live_pe or is_swing_exit_pe or is_overbought_high_rejection_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_breakout_mfi100_fall_pe or is_breakout_3m_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe or is_same_candle_ub_mfi_fall_exit_pe
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_pe_ltp >= surge_target_price)
