@@ -695,17 +695,40 @@ def select_itm_contracts(
 
     unique_contracts = list(by_strike.values())
 
+    # Infer strike step from unique contracts
+    strikes = sorted([c.strike for c in unique_contracts if c.strike > 0])
+    diffs = [strikes[i + 1] - strikes[i] for i in range(len(strikes) - 1)]
+    positive_diffs = [d for d in diffs if d > 0]
+    strike_step = min(positive_diffs) if positive_diffs else 100.0
+
+    atm_strike = round(spot / strike_step) * strike_step
+
     if option_type == "CE":
-        itm = sorted([c for c in unique_contracts if c.strike <= spot], key=lambda c: c.strike, reverse=True)
+        # Strictly ITM for CE: strike < atm_strike and strike <= spot
+        itm = sorted([c for c in unique_contracts if c.strike < atm_strike and c.strike <= spot], key=lambda c: c.strike, reverse=True)
         if len(itm) < count:
             all_sorted = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
-            return all_sorted[:count]
+            seen = set(c.strike for c in itm)
+            for c in all_sorted:
+                if c.strike not in seen:
+                    itm.append(c)
+                    seen.add(c.strike)
+                if len(itm) >= count:
+                    break
         return itm[:count]
     else:
-        itm = sorted([c for c in unique_contracts if c.strike >= spot], key=lambda c: c.strike)
+        # Strictly ITM for PE: strike > atm_strike
+        itm = sorted([c for c in unique_contracts if c.strike > atm_strike], key=lambda c: c.strike)
         if len(itm) < count:
-            all_sorted = sorted(unique_contracts, key=lambda c: c.strike)
-            return all_sorted[:count]
+            # Fallback: sorted descending so higher (ITM/ATM) strikes are prioritized over low OTM strikes
+            all_sorted = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
+            seen = set(c.strike for c in itm)
+            for c in all_sorted:
+                if c.strike not in seen:
+                    itm.append(c)
+                    seen.add(c.strike)
+                if len(itm) >= count:
+                    break
         return itm[:count]
 
 
@@ -3284,17 +3307,38 @@ def run_cloud_bot() -> None:
                     res_bb_ce = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
                     ub_3m_ce = res_bb_ce[1] if res_bb_ce else None
                     
+                    # Fetch 3m MFIs (5 and 14) for 3m Upper BB momentum evaluation
+                    mfis_3m_ce, prev_mfis_3m_ce = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "THREE_MINUTE", [5, 14])
+                    curr_mfi5_3m_ce = mfis_3m_ce.get(5, 50.0)
+                    prev_mfi5_3m_ce = prev_mfis_3m_ce.get(5, 50.0)
+                    curr_mfi14_3m_ce = mfis_3m_ce.get(14, 50.0)
+                    prev_mfi14_3m_ce = prev_mfis_3m_ce.get(14, 50.0)
+
                     is_1h_mfi_falling = (c_1h_mfi < p_1h_mfi)
                     is_3m_ub_near = (ub_3m_ce is not None) and (live_ce_ltp >= ub_3m_ce - 5.0)
-                    is_30pt_gain = (favorable_gain_ce >= 30.0)
+                    is_40pt_gain = (favorable_gain_ce >= 40.0)
+
+                    # Both 3m MFIs increasing (by at least 1.0 point)
+                    both_mfi_increasing_3m = (curr_mfi5_3m_ce >= prev_mfi5_3m_ce + 1.0) and (curr_mfi14_3m_ce >= prev_mfi14_3m_ce + 1.0)
+                    # Hold while MFI(14) is rising after MFI(5) reaches 100
+                    mfi14_rising_after_100 = (curr_mfi5_3m_ce >= 99.0 or c_mfi_val >= 99.0) and (curr_mfi14_3m_ce >= prev_mfi14_3m_ce)
+                    hold_due_to_surging_mfi = both_mfi_increasing_3m or mfi14_rising_after_100
+
+                    # Exit allowed if MFI(14) is falling OR both 3m MFIs are falling
+                    is_mfi14_falling_3m = (curr_mfi14_3m_ce < prev_mfi14_3m_ce)
+                    both_mfi_falling_3m = (curr_mfi5_3m_ce < prev_mfi5_3m_ce) and is_mfi14_falling_3m
+                    exit_mfi_confirmed = is_mfi14_falling_3m or both_mfi_falling_3m
+
+                    # Higher Time Frame MFI Hierarchy: follow 3m Upper BB / +40pt profit booking ONLY IF any HTF MFI is falling
+                    is_htf_mfi_falling = is_1h_mfi_falling or (c_mfi_val < c_mfi_prev_val)
+
+                    # Book profit at 3m Upper BB or +40pt gain ONLY IF exit is confirmed by falling 3m MFI AND any HTF MFI is falling
+                    is_3m_bb_profit_booking = (is_3m_ub_near or is_40pt_gain) and exit_mfi_confirmed and is_htf_mfi_falling and not hold_due_to_surging_mfi
                     
-                    # Book profit at 3m Upper BB High/Near High or +30-40pt gain when 1h MFI is falling
-                    is_3m_bb_profit_booking = is_1h_mfi_falling and (is_3m_ub_near or is_30pt_gain)
-                    
-                    is_mfi_tp_hit = (c_mfi_val >= 99.0) or (live_ce_ltp >= active_entry_price + 100.0 and c_mfi_val < c_mfi_prev_val) or is_3m_bb_profit_booking
+                    is_mfi_tp_hit = (c_mfi_val >= 99.0 and not (curr_mfi14_3m_ce >= prev_mfi14_3m_ce)) or (live_ce_ltp >= active_entry_price + 100.0 and c_mfi_val < c_mfi_prev_val) or is_3m_bb_profit_booking
                     
                     if not trailing_active and (live_ce_ltp >= active_target or is_mfi_tp_hit):
-                        tp_reason = "3m Upper BB / +30pt Profit Booking (1h MFI Falling)" if is_3m_bb_profit_booking else ("MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit else f"Practical Target (₹{active_target:.2f})")
+                        tp_reason = "3m Upper BB / +40pt Profit Booking (HTF MFI Falling)" if is_3m_bb_profit_booking else ("MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit else f"Practical Target (₹{active_target:.2f})")
                         logger.info("🟢 [CE EXIT - TARGET HIT] CE LTP ₹%.2f hit %s", live_ce_ltp, tp_reason)
                         send_mobile_alert(f"🟢 *CE EXIT - TARGET REACHED*\n\n"
                                           f"Reason: {tp_reason}\n"
@@ -3654,17 +3698,38 @@ def run_cloud_bot() -> None:
                     res_bb_pe = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
                     ub_3m_pe = res_bb_pe[1] if res_bb_pe else None
                     
+                    # Fetch 3m MFIs (5 and 14) for 3m Upper BB momentum evaluation
+                    mfis_3m_pe, prev_mfis_3m_pe = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "THREE_MINUTE", [5, 14])
+                    curr_mfi5_3m_pe = mfis_3m_pe.get(5, 50.0)
+                    prev_mfi5_3m_pe = prev_mfis_3m_pe.get(5, 50.0)
+                    curr_mfi14_3m_pe = mfis_3m_pe.get(14, 50.0)
+                    prev_mfi14_3m_pe = prev_mfis_3m_pe.get(14, 50.0)
+
                     is_1h_mfi_falling_pe = (p_1h_mfi < p_prev_1h_mfi)
                     is_3m_ub_near_pe = (ub_3m_pe is not None) and (live_pe_ltp >= ub_3m_pe - 5.0)
-                    is_30pt_gain_pe = (favorable_gain_pe >= 30.0)
+                    is_40pt_gain_pe = (favorable_gain_pe >= 40.0)
+
+                    # Both 3m MFIs increasing (by at least 1.0 point)
+                    both_mfi_increasing_3m_pe = (curr_mfi5_3m_pe >= prev_mfi5_3m_pe + 1.0) and (curr_mfi14_3m_pe >= prev_mfi14_3m_pe + 1.0)
+                    # Hold while MFI(14) is rising after MFI(5) reaches 100
+                    mfi14_rising_after_100_pe = (curr_mfi5_3m_pe >= 99.0 or p_mfi_val >= 99.0) and (curr_mfi14_3m_pe >= prev_mfi14_3m_pe)
+                    hold_due_to_surging_mfi_pe = both_mfi_increasing_3m_pe or mfi14_rising_after_100_pe
+
+                    # Exit allowed if MFI(14) is falling OR both 3m MFIs are falling
+                    is_mfi14_falling_3m_pe = (curr_mfi14_3m_pe < prev_mfi14_3m_pe)
+                    both_mfi_falling_3m_pe = (curr_mfi5_3m_pe < prev_mfi5_3m_pe) and is_mfi14_falling_3m_pe
+                    exit_mfi_confirmed_pe = is_mfi14_falling_3m_pe or both_mfi_falling_3m_pe
+
+                    # Higher Time Frame MFI Hierarchy: follow 3m Upper BB / +40pt profit booking ONLY IF any HTF MFI is falling
+                    is_htf_mfi_falling_pe = is_1h_mfi_falling_pe or (p_mfi_val < p_mfi_prev_val)
+
+                    # Book profit at 3m Upper BB or +40pt gain ONLY IF exit is confirmed by falling 3m MFI AND any HTF MFI is falling
+                    is_3m_bb_profit_booking_pe = (is_3m_ub_near_pe or is_40pt_gain_pe) and exit_mfi_confirmed_pe and is_htf_mfi_falling_pe and not hold_due_to_surging_mfi_pe
                     
-                    # Book profit at 3m Upper BB High/Near High or +30-40pt gain when 1h MFI is falling
-                    is_3m_bb_profit_booking_pe = is_1h_mfi_falling_pe and (is_3m_ub_near_pe or is_30pt_gain_pe)
-                    
-                    is_mfi_tp_hit_pe = (p_mfi_val >= 99.0) or (live_pe_ltp >= active_entry_price + 100.0 and p_mfi_val < p_mfi_prev_val) or is_3m_bb_profit_booking_pe
+                    is_mfi_tp_hit_pe = (p_mfi_val >= 99.0 and not (curr_mfi14_3m_pe >= prev_mfi14_3m_pe)) or (live_pe_ltp >= active_entry_price + 100.0 and p_mfi_val < p_mfi_prev_val) or is_3m_bb_profit_booking_pe
                     
                     if not trailing_active and (live_pe_ltp >= active_target or is_mfi_tp_hit_pe):
-                        tp_reason_pe = "3m Upper BB / +30pt Profit Booking (1h MFI Falling)" if is_3m_bb_profit_booking_pe else ("MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit_pe else f"Practical Target (₹{active_target:.2f})")
+                        tp_reason_pe = "3m Upper BB / +40pt Profit Booking (HTF MFI Falling)" if is_3m_bb_profit_booking_pe else ("MFI Target (100 / 100pt+ & Declining)" if is_mfi_tp_hit_pe else f"Practical Target (₹{active_target:.2f})")
                         logger.info("🟢 [PE EXIT - TARGET HIT] PE LTP ₹%.2f hit %s", live_pe_ltp, tp_reason_pe)
                         send_mobile_alert(f"🟢 *PE EXIT - TARGET REACHED*\n\n"
                                           f"Reason: {tp_reason_pe}\n"

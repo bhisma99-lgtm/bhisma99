@@ -1,9 +1,12 @@
 """
-State-Machine Strategy Wrapper with Dynamic In-Flight Handover Logic.
+Modular 3-Strategy Suite with Dynamic In-Flight Handover.
 
 This production-grade module implements:
 1. Multi-Timeframe Feature Matrix Normalization (15m, 30m, 1h, 3m).
-2. Strategy Base Architecture with 7 Concrete Strategy Modules from sbd_bot_cloud.py.
+2. Modular 3-Strategy Suite Architecture:
+   - Strategy 1: Previous High Breakout Momentum Entry
+   - Strategy 2: One-Time Post-SL Recovery Re-Entry (+2 Lots)
+   - Strategy 3: Dynamic Swing Low Breakout Retest Entry (with MFI(14) Rising Hold & Upper BB Rejection Exit)
 3. 4-State Machine Matrix:
    - State 0: Flat / Scanning
    - State 1: Active Long
@@ -15,6 +18,12 @@ This production-grade module implements:
 """
 
 from __future__ import annotations
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -122,6 +131,11 @@ class MarketContext:
     allow_reentry: bool
     recovery_eligible: bool
     initial_entry_done: bool
+    mfi5_3m: float = 50.0
+    mfi14_3m: float = 50.0
+    prev_mfi5_3m: float = 50.0
+    prev_mfi14_3m: float = 50.0
+    ub_3m: float = 0.0
 
 
 # =====================================================================
@@ -406,10 +420,10 @@ class PostBreakdownOversoldBounceStrategy(BaseStrategy):
 
 
 class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
-    """Strategy 7: Dynamic Agent-Based Swing Low Breakout Retest."""
+    """Strategy 3: Dynamic Swing Low Breakout & Retest with MFI confirmation and Upper BB Rejection Exit."""
     
     def __init__(self):
-        super().__init__("Dynamic Swing Low First Breakout Retest Entry", base_win_rate=0.69, base_rr=2.3)
+        super().__init__("Dynamic Swing Low First Breakout Retest Entry", base_win_rate=0.74, base_rr=2.5)
 
     def evaluate_entry(self, ctx: MarketContext) -> Optional[EntrySignal]:
         is_mfi_falling_from_ob = (ctx.prev_mfi5_15m >= 80.0 or ctx.prev_mfi14_15m >= 70.0) and (ctx.mfi5_15m < ctx.prev_mfi5_15m or ctx.mfi14_15m < ctx.prev_mfi14_15m)
@@ -417,21 +431,104 @@ class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
         if is_ob_blocked:
             return None
 
+        swing_low_bounce_zone = max(25.0, ctx.dynamic_tolerance * 2.5)
+        is_near_swing_low = (ctx.low <= ctx.recent_swing_low + swing_low_bounce_zone) or (ctx.open <= ctx.recent_swing_low + swing_low_bounce_zone)
         is_retest_level = (ctx.low <= ctx.mb_20 + ctx.dynamic_tolerance) or (ctx.low <= ctx.recent_swing_low + ctx.dynamic_tolerance) or (ctx.low <= ctx.prev_high and ctx.low >= ctx.prev_high - ctx.dynamic_tolerance)
         is_dual_rising = (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m >= ctx.prev_mfi14_15m)
+        is_bounce_to_open_swing_low = is_near_swing_low and (ctx.close >= ctx.open) and (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m > ctx.prev_mfi14_15m)
         
-        if is_retest_level and (ctx.close >= ctx.open) and is_dual_rising:
-            sl = max(ctx.low - 5.0, ctx.close - 20.0)
-            target = ctx.close + 35.0
-            return EntrySignal(self.name, PositionSide.LONG, ctx.close, sl, target, reason="Dynamic Swing Low / Retest Bounce")
+        if (is_retest_level or is_bounce_to_open_swing_low) and (ctx.close >= ctx.open) and is_dual_rising:
+            retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
+            entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
+            sl = max(ctx.low - 5.0, entry_p - 20.0)
+            target = entry_p + 35.0
+            return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Dynamic Swing Low / Retest Bounce")
         return None
 
     def evaluate_exit(self, ctx: MarketContext, position: Position) -> ExitSignal:
+        # 3m Upper BB / MFI Profit Booking Exit Logic (Exact User Specification)
+        curr_mfi5_3m = ctx.mfi5_3m if ctx.mfi5_3m > 0 else ctx.mfi5_15m
+        prev_mfi5_3m = ctx.prev_mfi5_3m if ctx.prev_mfi5_3m > 0 else ctx.prev_mfi5_15m
+        curr_mfi14_3m = ctx.mfi14_3m if ctx.mfi14_3m > 0 else ctx.mfi14_15m
+        prev_mfi14_3m = ctx.prev_mfi14_3m if ctx.prev_mfi14_3m > 0 else ctx.prev_mfi14_15m
+
+        # 1. Hold position if both 3m MFIs are increasing by >1.0 point
+        both_3m_mfi_surging = (curr_mfi5_3m >= prev_mfi5_3m + 1.0) and (curr_mfi14_3m >= prev_mfi14_3m + 1.0)
+        # OR if MFI(5) reaches 100 while MFI(14) is still rising
+        mfi100_and_14_rising = (curr_mfi5_3m >= 99.0 or ctx.mfi5_15m >= 99.0) and (curr_mfi14_3m >= prev_mfi14_3m or ctx.mfi14_15m >= ctx.prev_mfi14_15m)
+        hold_due_to_surging_mfi = both_3m_mfi_surging or mfi100_and_14_rising
+
+        # 2. Exit on 3m Upper BB touch / +40pt gain ONLY IF 3m MFI is falling AND HTF MFI is falling
+        is_mfi14_falling_3m = (curr_mfi14_3m < prev_mfi14_3m)
+        both_mfi_falling_3m = (curr_mfi5_3m < prev_mfi5_3m and curr_mfi14_3m < prev_mfi14_3m)
+        exit_mfi_confirmed = is_mfi14_falling_3m or both_mfi_falling_3m
+
+        # HTF MFI Hierarchy check: Only exit if higher timeframe MFI (15m/30m) is also falling
+        is_htf_mfi_falling = (ctx.mfi14_15m < ctx.prev_mfi14_15m) or (ctx.mfi14_30m < ctx.prev_mfi14_30m)
+
+        ub_target = ctx.ub_3m if ctx.ub_3m > 0 else ctx.ub_20
+        is_3m_ub_near = (ub_target > 0) and (ctx.high >= ub_target - 1.5 or ctx.close >= ub_target - 1.5 or position.peak_price >= ub_target - 1.5)
+        is_40pt_gain = (position.peak_price >= position.entry_price + 40.0) or (ctx.high >= position.entry_price + 40.0) or (ctx.close >= position.entry_price + 40.0)
+
+        if (is_3m_ub_near or is_40pt_gain) and exit_mfi_confirmed and is_htf_mfi_falling and not hold_due_to_surging_mfi:
+            if ub_target > 0 and ctx.high >= ub_target:
+                exit_price = max(ctx.open, min(ctx.high, ub_target))
+            elif ctx.high >= position.entry_price + 40.0:
+                exit_price = max(ctx.open, position.entry_price + 40.0)
+            else:
+                exit_price = ctx.close
+            return ExitSignal(True, exit_price, "3m Upper BB / +40pt Profit Booking (HTF MFI Falling Confirmed)")
+
+        if hold_due_to_surging_mfi:
+            return ExitSignal(False, ctx.close, "")  # Waiting / Holding position while 3m MFI is surging or MFI(5)=100 & MFI(14) rising
+
+        # Standard strategy fallback exits when MFI is not actively surging:
         if (position.peak_price >= ctx.ub_20 - 5.0 or ctx.high >= ctx.ub_20 - 5.0) and (ctx.mfi14_15m >= 70.0 or ctx.mfi5_15m >= 80.0) and (ctx.close <= ctx.open):
             return ExitSignal(True, ctx.close, "Swing Low Overbought Retrace Exit")
         if ctx.mfi5_15m < ctx.prev_mfi5_15m and ctx.mfi14_15m < ctx.prev_mfi14_15m:
             return ExitSignal(True, ctx.close, "Swing Low Dual MFI Fall Exit")
+        if ctx.close >= position.target_price:
+            return ExitSignal(True, ctx.close, "Target Hit (RR Booked)")
         return ExitSignal(False, ctx.close, "")
+
+    def calculate_trailing_sl(self, ctx: MarketContext, position: Position) -> float:
+        """Dynamic trailing SL: multi-stage profit lock starting above 40 points.
+        No trail before 40 points as long as MFI(14) rising in 15 minutes.
+        """
+        favorable = position.peak_price - position.entry_price if position.side == PositionSide.LONG else position.entry_price - position.peak_price
+        sl = position.current_sl
+        is_mfi14_rising = (ctx.mfi14_15m > ctx.prev_mfi14_15m) or (ctx.mfi14_15m >= ctx.prev_mfi14_15m and ctx.mfi5_15m > ctx.prev_mfi5_15m)
+
+        if is_mfi14_rising:
+            # Rule: No trail before 40 points while MFI(14) is rising in 15m. Trail starts above 40 points:
+            if favorable >= 48.0:
+                sl = max(sl, position.entry_price + 18.0 if position.side == PositionSide.LONG else position.entry_price - 18.0)
+            elif favorable >= 40.0:
+                sl = max(sl, position.entry_price + 10.0 if position.side == PositionSide.LONG else position.entry_price - 10.0)
+        else:
+            if favorable >= 40.0:
+                sl = max(sl, position.entry_price + 10.0 if position.side == PositionSide.LONG else position.entry_price - 10.0)
+            elif favorable >= 18.0:
+                sl = max(sl, position.entry_price + 10.0 if position.side == PositionSide.LONG else position.entry_price - 10.0)
+            elif favorable >= 10.0:
+                sl = max(sl, position.entry_price + 3.0 if position.side == PositionSide.LONG else position.entry_price - 3.0)
+        return sl
+
+    def calculate_expected_value(self, ctx: MarketContext, position: Position) -> float:
+        """Dynamic EV calculation with MFI(14) breakout velocity weighting."""
+        mfi_momentum = 1.0
+        if ctx.mfi14_15m > ctx.prev_mfi14_15m:
+            mfi_momentum += 0.25
+        if ctx.mfi5_15m > ctx.prev_mfi5_15m:
+            mfi_momentum += 0.15
+        if ctx.mfi14_15m >= 70.0 and ctx.high >= ctx.ub_20 - 2.0:
+            mfi_momentum -= 0.30
+
+        dist_to_target = max(5.0, position.target_price - ctx.close)
+        dist_to_sl = max(5.0, ctx.close - position.current_sl)
+        adjusted_win_rate = min(0.92, max(0.20, self.base_win_rate * mfi_momentum))
+        loss_rate = 1.0 - adjusted_win_rate
+        return float((adjusted_win_rate * dist_to_target) - (loss_rate * dist_to_sl))
 
 
 # =====================================================================
@@ -454,7 +551,8 @@ class StateMachineHandoverEngine:
 
     def process_candle(self, ctx: MarketContext) -> Optional[Dict[str, Any]]:
         """Processes a single candle through the state machine."""
-        
+        time_str = ctx.timestamp.split("T")[-1].split(" ")[-1][:5] if ("T" in ctx.timestamp or " " in ctx.timestamp) else ""
+
         # UNIVERSAL RULE #1: Hard Blocker on MFI(5)=100 or extreme overbought
         is_universal_ob = (ctx.mfi5_15m >= 99.0) or (ctx.mfi14_15m >= 70.0) or (ctx.mfi5_15m >= 90.0 and not (ctx.mfi14_15m > ctx.prev_mfi14_15m))
         
@@ -462,6 +560,10 @@ class StateMachineHandoverEngine:
         # STATE 0: SCANNING / FLAT
         # -------------------------------------------------------------
         if self.state == MachineState.STATE_0_SCANNING:
+            # Rule: Restrict fresh Entry on or after 15:00:00
+            if time_str >= "15:00":
+                return None
+
             if is_universal_ob:
                 return None  # Block fresh entries at 100/overbought
 
@@ -642,7 +744,7 @@ class StateMachineHandoverEngine:
 # 6. UNIFIED HISTORICAL BACKTEST ENGINE & PERFORMANCE REPORTING
 # =====================================================================
 
-def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFrame] = None, from_date_str: Optional[str] = None, contract_symbol: str = "") -> Tuple[pd.DataFrame, Dict[str, Any]]:
+def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFrame] = None, df_3m: Optional[pd.DataFrame] = None, from_date_str: Optional[str] = None, contract_symbol: str = "") -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Executes concurrent synchronized backtest of the 7-strategy suite with Dynamic Handover.
     """
@@ -650,49 +752,82 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
         return pd.DataFrame(), {"total_trades": 0, "win_rate_pct": 0.0, "total_pnl_pts": 0.0, "total_in_flight_handovers": 0, "profit_factor": 0.0}
 
     # 1. Feature Engineering on Full Warmup Dataset
-    df = df_15m.copy()
+    df_15m_calc = df_15m.copy()
     for col in ['open', 'high', 'low', 'close', 'volume']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        if col in df_15m_calc.columns:
+            df_15m_calc[col] = pd.to_numeric(df_15m_calc[col], errors='coerce').fillna(0.0)
 
-    df['mfi5'] = calculate_mfi(df['high'], df['low'], df['close'], df['volume'], period=5)
-    df['mfi14'] = calculate_mfi(df['high'], df['low'], df['close'], df['volume'], period=14)
-    df['prev_mfi5'] = df['mfi5'].shift(1).fillna(50.0)
-    df['prev_mfi14'] = df['mfi14'].shift(1).fillna(50.0)
+    # Filter out zero-volume or flat un-traded candles before indicator calculations
+    df_15m_calc = df_15m_calc[(df_15m_calc['volume'] > 0.0) & ((df_15m_calc['high'] - df_15m_calc['low']) >= 0.5)].copy().reset_index(drop=True)
+
+    df_15m_calc['mfi5'] = calculate_mfi(df_15m_calc['high'], df_15m_calc['low'], df_15m_calc['close'], df_15m_calc['volume'], period=5)
+    df_15m_calc['mfi14'] = calculate_mfi(df_15m_calc['high'], df_15m_calc['low'], df_15m_calc['close'], df_15m_calc['volume'], period=14)
+    df_15m_calc['prev_mfi5'] = df_15m_calc['mfi5'].shift(1).fillna(50.0)
+    df_15m_calc['prev_mfi14'] = df_15m_calc['mfi14'].shift(1).fillna(50.0)
     
-    mb, ub, lb = calculate_bollinger_bands(df['close'], period=20, num_std=2.0)
-    df['mb_20'] = mb
-    df['ub_20'] = ub
-    df['lb_20'] = lb
-    df['prev_high'] = df['high'].shift(1).fillna(df['high'])
-    df['prev_low'] = df['low'].shift(1).fillna(df['low'])
-    df['prev_close'] = df['close'].shift(1).fillna(df['close'])
+    mb, ub, lb = calculate_bollinger_bands(df_15m_calc['close'], period=20, num_std=2.0)
+    df_15m_calc['mb_20'] = mb
+    df_15m_calc['ub_20'] = ub
+    df_15m_calc['lb_20'] = lb
+    df_15m_calc['prev_high'] = df_15m_calc['high'].shift(1).fillna(df_15m_calc['high'])
+    df_15m_calc['prev_low'] = df_15m_calc['low'].shift(1).fillna(df_15m_calc['low'])
+    df_15m_calc['prev_close'] = df_15m_calc['close'].shift(1).fillna(df_15m_calc['close'])
 
     # 30m alignment
     if df_30m is not None and not df_30m.empty:
-        df_30m = df_30m.copy()
+        df_30m_calc = df_30m.copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
-            if col in df_30m.columns:
-                df_30m[col] = pd.to_numeric(df_30m[col], errors='coerce').fillna(0.0)
-        df_30m['mfi5_30m'] = calculate_mfi(df_30m['high'], df_30m['low'], df_30m['close'], df_30m['volume'], period=5)
-        df_30m['mfi14_30m'] = calculate_mfi(df_30m['high'], df_30m['low'], df_30m['close'], df_30m['volume'], period=14)
-        df = df.merge(df_30m[['timestamp', 'mfi5_30m', 'mfi14_30m']], on='timestamp', how='left').ffill()
+            if col in df_30m_calc.columns:
+                df_30m_calc[col] = pd.to_numeric(df_30m_calc[col], errors='coerce').fillna(0.0)
+        df_30m_calc['mfi5_30m'] = calculate_mfi(df_30m_calc['high'], df_30m_calc['low'], df_30m_calc['close'], df_30m_calc['volume'], period=5)
+        df_30m_calc['mfi14_30m'] = calculate_mfi(df_30m_calc['high'], df_30m_calc['low'], df_30m_calc['close'], df_30m_calc['volume'], period=14)
+        df_30m_calc['prev_mfi5_30m'] = df_30m_calc['mfi5_30m'].shift(1).fillna(50.0)
+        df_30m_calc['prev_mfi14_30m'] = df_30m_calc['mfi14_30m'].shift(1).fillna(50.0)
+        df_30m_calc['prev_prev_mfi14_30m'] = df_30m_calc['mfi14_30m'].shift(2).fillna(50.0)
     else:
-        df['mfi5_30m'] = df['mfi5']
-        df['mfi14_30m'] = df['mfi14']
-    
-    df['prev_mfi5_30m'] = df['mfi5_30m'].shift(1).fillna(50.0)
-    df['prev_mfi14_30m'] = df['mfi14_30m'].shift(1).fillna(50.0)
-    df['prev_prev_mfi14_30m'] = df['mfi14_30m'].shift(2).fillna(50.0)
+        df_30m_calc = df_15m_calc.copy()
+        df_30m_calc['mfi5_30m'] = df_30m_calc['mfi5']
+        df_30m_calc['mfi14_30m'] = df_30m_calc['mfi14']
+        df_30m_calc['prev_mfi5_30m'] = df_30m_calc['prev_mfi5']
+        df_30m_calc['prev_mfi14_30m'] = df_30m_calc['prev_mfi14']
+        df_30m_calc['prev_prev_mfi14_30m'] = df_30m_calc['mfi14_30m'].shift(1).fillna(50.0)
 
-    # Instantiate the 7-Strategy Suite
+    # 3m alignment for micro-timeframe 3m bar resolution execution
+    if df_3m is not None and not df_3m.empty:
+        df_3m_calc = df_3m.copy()
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if col in df_3m_calc.columns:
+                df_3m_calc[col] = pd.to_numeric(df_3m_calc[col], errors='coerce').fillna(0.0)
+        df_3m_calc = df_3m_calc[(df_3m_calc['volume'] > 0.0) & ((df_3m_calc['high'] - df_3m_calc['low']) >= 0.5)].copy().reset_index(drop=True)
+        df_3m_calc['mfi5_3m'] = calculate_mfi(df_3m_calc['high'], df_3m_calc['low'], df_3m_calc['close'], df_3m_calc['volume'], period=5)
+        df_3m_calc['mfi14_3m'] = calculate_mfi(df_3m_calc['high'], df_3m_calc['low'], df_3m_calc['close'], df_3m_calc['volume'], period=14)
+        _, ub_3m, _ = calculate_bollinger_bands(df_3m_calc['close'], period=20, num_std=2.0)
+        df_3m_calc['ub_3m'] = ub_3m
+        df_3m_calc['prev_mfi5_3m'] = df_3m_calc['mfi5_3m'].shift(1).fillna(50.0)
+        df_3m_calc['prev_mfi14_3m'] = df_3m_calc['mfi14_3m'].shift(1).fillna(50.0)
+
+        df_eval = pd.merge_ordered(df_3m_calc, df_15m_calc[['timestamp', 'mfi5', 'mfi14', 'prev_mfi5', 'prev_mfi14', 'mb_20', 'ub_20', 'lb_20', 'prev_high', 'prev_low', 'prev_close']], on='timestamp', how='left').ffill()
+        df_eval = pd.merge_ordered(df_eval, df_30m_calc[['timestamp', 'mfi5_30m', 'mfi14_30m', 'prev_mfi5_30m', 'prev_mfi14_30m', 'prev_prev_mfi14_30m']], on='timestamp', how='left').ffill()
+        df = df_eval.dropna(subset=['open', 'close']).reset_index(drop=True)
+    else:
+        df = df_15m_calc.copy()
+        df['mfi5_3m'] = df['mfi5']
+        df['mfi14_3m'] = df['mfi14']
+        df['ub_3m'] = df['ub_20']
+        df['prev_mfi5_3m'] = df['prev_mfi5']
+        df['prev_mfi14_3m'] = df['prev_mfi14']
+        df = pd.merge_ordered(df, df_30m_calc[['timestamp', 'mfi5_30m', 'mfi14_30m', 'prev_mfi5_30m', 'prev_mfi14_30m', 'prev_prev_mfi14_30m']], on='timestamp', how='left').ffill()
+
+    df['mfi5_3m'] = df['mfi5_3m'].fillna(df['mfi5'])
+    df['mfi14_3m'] = df['mfi14_3m'].fillna(df['mfi14'])
+    df['ub_3m'] = df['ub_3m'].fillna(df['ub_20'])
+    df['prev_mfi5_3m'] = df['prev_mfi5_3m'].fillna(df['prev_mfi5'])
+    df['prev_mfi14_3m'] = df['prev_mfi14_3m'].fillna(df['prev_mfi14'])
+
+    # Instantiate the Modular 3-Strategy Suite
     strategies = [
-        InitialDualMFILowerBandBounceStrategy(),
         PreviousHighBreakoutMomentumStrategy(),
-        DualMFI30mSecondaryReversalStrategy(),
-        MFITrendReentryMBStrategy(),
         PostSLRecoveryReentryStrategy(),
-        PostBreakdownOversoldBounceStrategy(),
         DynamicSwingLowBreakoutRetestStrategy(),
     ]
 
@@ -700,6 +835,7 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
     trade_events = []
     initial_entry_done = False
     recovery_eligible = False
+    sl_stopped_dates = set()
 
     for i in range(len(df)):
         row = df.iloc[i]
@@ -708,6 +844,10 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
 
         # Ignore warmup candles prior to from_date_str for trade triggering
         if from_date_str and c_date < from_date_str:
+            continue
+
+        # If Stop Loss was hit for this side today, halt new entries for this day
+        if not engine.active_position and c_date in sl_stopped_dates:
             continue
 
         lookback = min(7, i) if i >= 1 else 1
@@ -738,6 +878,11 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
             mfi14_60m=50.0,
             prev_mfi5_60m=50.0,
             prev_mfi14_60m=50.0,
+            mfi5_3m=float(row['mfi5_3m']),
+            mfi14_3m=float(row['mfi14_3m']),
+            prev_mfi5_3m=float(row['prev_mfi5_3m']),
+            prev_mfi14_3m=float(row['prev_mfi14_3m']),
+            ub_3m=float(row['ub_3m']),
             mb_20=float(row['mb_20']),
             ub_20=float(row['ub_20']),
             lb_20=float(row['lb_20']),
@@ -762,7 +907,8 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
                 if engine.active_position and contract_symbol:
                     engine.active_position.metadata["contract"] = contract_symbol
             elif event["event"] == "EXIT" and event["pnl"] < 0:
-                recovery_eligible = True
+                sl_stopped_dates.add(c_date)
+                recovery_eligible = False
 
     # Performance Analytics
     closed_df = pd.DataFrame(engine.closed_trades)
@@ -788,4 +934,4 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
 
 
 if __name__ == "__main__":
-    print("🚀 [STATE-MACHINE STRATEGY HANDOVER ENGINE] Initialized successfully with 7 Core Strategies.")
+    print("🚀 [MODULAR 3-STRATEGY SUITE WITH DYNAMIC IN-FLIGHT HANDOVER] Initialized successfully with 3 Core Strategies.")
