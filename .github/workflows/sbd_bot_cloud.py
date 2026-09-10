@@ -16,6 +16,8 @@ Run locally or on Cloud Schedulers (GitHub Actions / Railway / PythonAnywhere):
 
 from __future__ import annotations
 
+import contextlib
+import io
 import math
 import os
 import re
@@ -1598,7 +1600,8 @@ def build_epm_grid_and_contracts(
     buffer: float = 0.13,
 ) -> tuple[EPMMasterGrid, list[OptionContract], list[OptionContract]]:
     """Fetch option contracts, select top 3 ITM strikes for CE and PE, calculate EPM grid for all of them."""
-    search_res = smart_api.searchScrip("BFO", "SENSEX")
+    with contextlib.redirect_stdout(io.StringIO()):
+        search_res = smart_api.searchScrip("BFO", "SENSEX")
     rows = search_res.get("data", []) if isinstance(search_res, dict) else []
 
     delta_map = load_delta_map()
@@ -2180,7 +2183,7 @@ def run_cloud_bot() -> None:
     # Continuous Monitoring Loop: 0.05s (50ms) high-frequency tick drive when WS feed is active, 1.0s HTTP fallback
     poll_interval = 0.05
     is_continuous = "--once" not in sys.argv
-    execution_mode = "LIVE" if "--live" in sys.argv else "PAPER"
+    execution_mode = "LIVE" if ("--live" in sys.argv or os.getenv("EXECUTION_MODE", "").upper() == "LIVE" or os.getenv("PAPER_MODE", "").lower() == "false") else "PAPER"
 
     # State Machine Variables
     bot_state = "IDLE"  # Options: "IDLE", "CE_LONG", "PE_LONG"
@@ -2229,6 +2232,8 @@ def run_cloud_bot() -> None:
     recovery_reentry_eligible = False
     recovery_reentry_done = False
     base_lot_size = lot_size
+    staggered_scaled_in = False
+    initial_entry_price = 0.0
     original_sl_distance = 0.0
     trailing_active = False
     peak_price = 0.0
@@ -3074,8 +3079,8 @@ def run_cloud_bot() -> None:
                                     is_post_breakdown_entry_pe = False
                                     is_swing_low_retest_entry_pe = False
 
-                                # Block fresh entries after 3:14 PM (15:14 IST)
-                                if now_time_str >= "15:14":
+                                # Block fresh entries after 2:45 PM (14:45 IST) for intraday safety before 15:25 square-off
+                                if now_time_str >= "14:45":
                                     is_clean_initial_entry_pe = False
                                     is_breakout_entry_pe = False
                                     is_30m_mfi_option_pe = False
@@ -3167,6 +3172,9 @@ def run_cloud_bot() -> None:
                                 bot_state = "CE_LONG"
                                 active_contract = ce_contract
                                 active_entry_price = live_ce_ltp
+                                initial_entry_price = live_ce_ltp
+                                staggered_scaled_in = False
+                                lot_size = max(1, base_lot_size // 2) # Initial 2 Lots (40 Qty) Base Order
                                 target_offset_ce = 55.0
                                 active_target = active_entry_price + target_offset_ce
                                 active_sl = active_sl_ce
@@ -3230,6 +3238,9 @@ def run_cloud_bot() -> None:
                                 bot_state = "PE_LONG"
                                 active_contract = pe_contract
                                 active_entry_price = live_pe_ltp
+                                initial_entry_price = live_pe_ltp
+                                staggered_scaled_in = False
+                                lot_size = max(1, base_lot_size // 2) # Initial 2 Lots (40 Qty) Base Order
                                 target_offset_pe = 55.0
                                 active_target = active_entry_price + target_offset_pe
                                 active_sl = active_sl_pe
@@ -3301,6 +3312,23 @@ def run_cloud_bot() -> None:
                         c_low_15m = min(recent_ce_low, live_ce_ltp)
                     else:
                         c_low_15m = min(c_low_15m, recent_ce_low)
+
+                    # Pyramiding Staggered Scale-In Check CE (Add remaining 2 lots on Dip or Trend Bounce)
+                    if not staggered_scaled_in:
+                        is_dip_scale_in_ce = (live_ce_ltp <= initial_entry_price - 8.0) and (live_ce_ltp > active_sl) and (curr_mfi5_ce > prev_mfi5_ce)
+                        is_trend_scale_in_ce = (peak_price >= initial_entry_price + 15.0) and (live_ce_ltp >= initial_entry_price + 2.0) and (curr_mfi5_ce > prev_mfi5_ce + 1.0)
+                        
+                        if is_dip_scale_in_ce or is_trend_scale_in_ce:
+                            add_lots_ce = max(1, base_lot_size // 2)
+                            scale_qty_ce = add_lots_ce * 20
+                            if execution_mode == "LIVE":
+                                submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", scale_qty_ce)
+                            active_entry_price = (active_entry_price + live_ce_ltp) / 2.0
+                            lot_size = lot_size + add_lots_ce
+                            staggered_scaled_in = True
+                            if is_trend_scale_in_ce:
+                                active_sl = max(active_sl, initial_entry_price) # Move SL to Breakeven Cost
+                            logger.info("🔥 [STAGGERED SCALE-IN CE SUCCESS] Added %d Lots at ₹%.2f | New Avg Entry: ₹%.2f | Total Lots: %d", add_lots_ce, live_ce_ltp, active_entry_price, lot_size)
 
                     # Fetch 15m MFIs for diagnostic & SL hold check
                     mfis_15m_ce, prev_mfis_15m_ce = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
@@ -3415,28 +3443,29 @@ def run_cloud_bot() -> None:
                     # No trail before 40 points as long as MFI(14) rising in 15 minutes.
                     is_mfi14_rising_15m_ce = (curr_mfi14_ce > prev_mfi14_ce) or (curr_mfi14_ce >= prev_mfi14_ce and curr_mfi5_ce > prev_mfi5_ce)
 
-                    if is_mfi14_rising_15m_ce:
-                        # No trailing before +40 pts while MFI(14) is rising in 15m. Trail starts above 40 points:
-                        if favorable_gain_ce >= 48.0:
-                            if active_sl < active_entry_price + 18.0:
-                                active_sl = active_entry_price + 18.0
-                                logger.info("🔥 [STAGE 2 TRAILING +48pt Move] CE MFI(14) Rising | SL raised to Entry+18: ₹%.2f", active_sl)
-                        elif favorable_gain_ce >= 40.0:
-                            if active_sl < active_entry_price + 10.0:
-                                active_sl = active_entry_price + 10.0
-                                logger.info("🔥 [STAGE 1 TRAILING +40pt Move] CE MFI(14) Rising | SL raised to Entry+10: ₹%.2f", active_sl)
+                    # Institutional Dual-Regime Trend Engine:
+                    # 1. Strong Trend Regime (MFI14 >= 50 or HTF Rising): Allow MB dips for big swing highs
+                    # 2. Exhaustion / Sideways Regime (Overbought / Retest Failure): Tight Smart Trailing
+                    is_strong_institutional_trend_ce = (is_mfi14_rising_15m_ce or curr_mfi14_ce >= 50.0) and (mfi14_30m >= prev_mfi14_30m)
+
+                    if is_strong_institutional_trend_ce:
+                        # Allow price to breathe/dip to Middle Band; trail only after major +50pt surge
+                        if favorable_gain_ce >= 70.0:
+                            active_sl = max(active_sl, peak_price - 20.0) # Lock major runner gains
+                        elif favorable_gain_ce >= 50.0:
+                            active_sl = max(active_sl, active_entry_price + 20.0)
+                        elif favorable_gain_ce >= 30.0:
+                            active_sl = max(active_sl, active_entry_price) # Move to Cost Price / Breakeven
                         else:
-                            # Hold initial risk (-20) while MFI(14) is rising below 40 pts
-                            active_sl = max(active_sl, active_entry_price - 20.0)
+                            active_sl = max(active_sl, active_entry_price - 20.0) # Hold risk floor on MB dips
                     else:
+                        # Sideways / Exhaustion Regime: Active Smart Trailing
                         if favorable_gain_ce >= 40.0:
-                            active_sl = max(active_sl, active_entry_price + 10.0)
-                        elif favorable_gain_ce >= 18.0:
-                            active_sl = max(active_sl, active_entry_price + 10.0)
-                        elif favorable_gain_ce >= 10.0:
-                            active_sl = max(active_sl, active_entry_price + 3.0)
+                            active_sl = max(active_sl, active_entry_price + 15.0)
                         elif favorable_gain_ce >= 20.0:
-                            active_sl = max(active_sl, active_entry_price - 7.0)
+                            active_sl = max(active_sl, active_entry_price + 3.0)
+                        elif favorable_gain_ce >= 12.0:
+                            active_sl = max(active_sl, active_entry_price - 5.0)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
@@ -3708,6 +3737,23 @@ def run_cloud_bot() -> None:
                     else:
                         p_low_15m = min(p_low_15m, recent_pe_low)
 
+                    # Pyramiding Staggered Scale-In Check PE (Add remaining 2 lots on Dip or Trend Bounce)
+                    if not staggered_scaled_in:
+                        is_dip_scale_in_pe = (live_pe_ltp <= initial_entry_price - 8.0) and (live_pe_ltp > active_sl) and (curr_mfi5_pe > prev_mfi5_pe)
+                        is_trend_scale_in_pe = (peak_price >= initial_entry_price + 15.0) and (live_pe_ltp >= initial_entry_price + 2.0) and (curr_mfi5_pe > prev_mfi5_pe + 1.0)
+                        
+                        if is_dip_scale_in_pe or is_trend_scale_in_pe:
+                            add_lots_pe = max(1, base_lot_size // 2)
+                            scale_qty_pe = add_lots_pe * 20
+                            if execution_mode == "LIVE":
+                                submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", scale_qty_pe)
+                            active_entry_price = (active_entry_price + live_pe_ltp) / 2.0
+                            lot_size = lot_size + add_lots_pe
+                            staggered_scaled_in = True
+                            if is_trend_scale_in_pe:
+                                active_sl = max(active_sl, initial_entry_price) # Move SL to Breakeven Cost
+                            logger.info("🔥 [STAGGERED SCALE-IN PE SUCCESS] Added %d Lots at ₹%.2f | New Avg Entry: ₹%.2f | Total Lots: %d", add_lots_pe, live_pe_ltp, active_entry_price, lot_size)
+
                     # Fetch 15m MFIs for diagnostic & SL hold check
                     mfis_15m_pe_act, prev_mfis_15m_pe_act = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
                     curr_mfi5_pe = mfis_15m_pe_act.get(5, 50.0)
@@ -3821,28 +3867,29 @@ def run_cloud_bot() -> None:
                     # No trail before 40 points as long as MFI(14) rising in 15 minutes.
                     is_mfi14_rising_15m_pe = (curr_mfi14_pe > prev_mfi14_pe) or (curr_mfi14_pe >= prev_mfi14_pe and curr_mfi5_pe > prev_mfi5_pe)
 
-                    if is_mfi14_rising_15m_pe:
-                        # No trailing before +40 pts while MFI(14) is rising in 15m. Trail starts above 40 points:
-                        if favorable_gain_pe >= 48.0:
-                            if active_sl < active_entry_price + 18.0:
-                                active_sl = active_entry_price + 18.0
-                                logger.info("🔥 [STAGE 2 TRAILING +48pt Move PE] MFI(14) Rising | SL raised to Entry+18: ₹%.2f", active_sl)
-                        elif favorable_gain_pe >= 40.0:
-                            if active_sl < active_entry_price + 10.0:
-                                active_sl = active_entry_price + 10.0
-                                logger.info("🔥 [STAGE 1 TRAILING +40pt Move PE] MFI(14) Rising | SL raised to Entry+10: ₹%.2f", active_sl)
+                    # Institutional Dual-Regime Trend Engine PE:
+                    # 1. Strong Trend Regime (MFI14 >= 50 or HTF Rising): Allow MB dips for big swing highs
+                    # 2. Exhaustion / Sideways Regime (Overbought / Retest Failure): Tight Smart Trailing
+                    is_strong_institutional_trend_pe = (is_mfi14_rising_15m_pe or curr_mfi14_pe >= 50.0) and (mfi14_30m_pe >= prev_mfi14_30m_pe)
+
+                    if is_strong_institutional_trend_pe:
+                        # Allow price to breathe/dip to Middle Band; trail only after major +50pt surge
+                        if favorable_gain_pe >= 70.0:
+                            active_sl = max(active_sl, peak_price - 20.0) # Lock major runner gains
+                        elif favorable_gain_pe >= 50.0:
+                            active_sl = max(active_sl, active_entry_price + 20.0)
+                        elif favorable_gain_pe >= 30.0:
+                            active_sl = max(active_sl, active_entry_price) # Move to Cost Price / Breakeven
                         else:
-                            # Hold initial risk (-20) while MFI(14) is rising below 40 pts
-                            active_sl = max(active_sl, active_entry_price - 20.0)
+                            active_sl = max(active_sl, active_entry_price - 20.0) # Hold risk floor on MB dips
                     else:
+                        # Sideways / Exhaustion Regime: Active Smart Trailing
                         if favorable_gain_pe >= 40.0:
-                            active_sl = max(active_sl, active_entry_price + 10.0)
-                        elif favorable_gain_pe >= 18.0:
-                            active_sl = max(active_sl, active_entry_price + 10.0)
-                        elif favorable_gain_pe >= 10.0:
-                            active_sl = max(active_sl, active_entry_price + 3.0)
+                            active_sl = max(active_sl, active_entry_price + 15.0)
                         elif favorable_gain_pe >= 20.0:
-                            active_sl = max(active_sl, active_entry_price - 7.0)
+                            active_sl = max(active_sl, active_entry_price + 3.0)
+                        elif favorable_gain_pe >= 12.0:
+                            active_sl = max(active_sl, active_entry_price - 5.0)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
