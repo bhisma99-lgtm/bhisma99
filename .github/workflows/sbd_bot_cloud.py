@@ -754,7 +754,7 @@ def create_authenticated_smartapi_client() -> Any:
     try:
         pub_ip = requests.get("https://api.ipify.org", timeout=3.0).text.strip()
     except Exception:
-        pub_ip = "117.99.43.62"
+        pub_ip = "117.97.214.136"
 
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
     smart_api.clientPublicIP = pub_ip
