@@ -135,7 +135,11 @@ class MarketContext:
     mfi14_3m: float = 50.0
     prev_mfi5_3m: float = 50.0
     prev_mfi14_3m: float = 50.0
+    prev_prev_mfi5_3m: float = 50.0
+    prev_prev_mfi14_3m: float = 50.0
+    mb_3m: float = 0.0
     ub_3m: float = 0.0
+    lb_3m: float = 0.0
 
 
 # =====================================================================
@@ -424,25 +428,96 @@ class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
     
     def __init__(self):
         super().__init__("Dynamic Swing Low First Breakout Retest Entry", base_win_rate=0.74, base_rr=2.5)
+        self.waiting_for_bb_pullback: bool = False
+        self.lower_bb_touched: bool = False
+        self.current_day: str = ""
+
+    def _reset_day_state(self, current_day: str):
+        if self.current_day != current_day:
+            self.current_day = current_day
+            self.waiting_for_bb_pullback = False
+            self.lower_bb_touched = False
 
     def evaluate_entry(self, ctx: MarketContext) -> Optional[EntrySignal]:
+        c_day = ctx.timestamp[:10] if len(ctx.timestamp) >= 10 else ""
+        self._reset_day_state(c_day)
+
         is_mfi_falling_from_ob = (ctx.prev_mfi5_15m >= 80.0 or ctx.prev_mfi14_15m >= 70.0) and (ctx.mfi5_15m < ctx.prev_mfi5_15m or ctx.mfi14_15m < ctx.prev_mfi14_15m)
         is_ob_blocked = (ctx.mfi5_15m >= 80.0 or ctx.mfi14_15m >= 68.0) or (ctx.ub_20 > 0 and ctx.high >= ctx.ub_20 - 8.0) or is_mfi_falling_from_ob
         if is_ob_blocked:
+            self.waiting_for_bb_pullback = False
+            self.lower_bb_touched = False
             return None
 
         swing_low_bounce_zone = max(25.0, ctx.dynamic_tolerance * 2.5)
-        is_near_swing_low = (ctx.low <= ctx.recent_swing_low + swing_low_bounce_zone) or (ctx.open <= ctx.recent_swing_low + swing_low_bounce_zone)
-        is_retest_level = (ctx.low <= ctx.mb_20 + ctx.dynamic_tolerance) or (ctx.low <= ctx.recent_swing_low + ctx.dynamic_tolerance) or (ctx.low <= ctx.prev_high and ctx.low >= ctx.prev_high - ctx.dynamic_tolerance)
-        is_dual_rising = (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m >= ctx.prev_mfi14_15m)
-        is_bounce_to_open_swing_low = is_near_swing_low and (ctx.close >= ctx.open) and (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m > ctx.prev_mfi14_15m)
         
-        if (is_retest_level or is_bounce_to_open_swing_low) and (ctx.close >= ctx.open) and is_dual_rising:
-            retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
-            entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
-            sl = max(ctx.low - 5.0, entry_p - 20.0)
-            target = entry_p + 35.0
-            return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Dynamic Swing Low / Retest Bounce")
+        # Middle Band Proximity & Correction at or below MB:
+        mb_level = ctx.mb_3m if ctx.mb_3m > 0 else ctx.mb_20
+        is_corrected_to_mb = (mb_level > 0) and (ctx.low <= mb_level + 1.0)
+        is_bounce_to_open = (ctx.close >= ctx.open)
+        is_mb_setup = is_corrected_to_mb and is_bounce_to_open
+
+        is_near_swing_low = (ctx.low <= ctx.recent_swing_low + swing_low_bounce_zone) or (ctx.open <= ctx.recent_swing_low + swing_low_bounce_zone)
+        is_candidate_setup = (is_mb_setup or is_near_swing_low) and is_bounce_to_open
+
+        # 3min MFI indicators
+        curr_mfi5_3m = ctx.mfi5_3m if ctx.mfi5_3m > 0 else ctx.mfi5_15m
+        prev_mfi5_3m = ctx.prev_mfi5_3m if ctx.prev_mfi5_3m > 0 else ctx.prev_mfi5_15m
+        prev_prev_mfi5_3m = ctx.prev_prev_mfi5_3m if ctx.prev_prev_mfi5_3m > 0 else prev_mfi5_3m
+        curr_mfi14_3m = ctx.mfi14_3m if ctx.mfi14_3m > 0 else ctx.mfi14_15m
+        prev_mfi14_3m = ctx.prev_mfi14_3m if ctx.prev_mfi14_3m > 0 else ctx.prev_mfi14_15m
+        prev_prev_mfi14_3m = ctx.prev_prev_mfi14_3m if ctx.prev_prev_mfi14_3m > 0 else prev_mfi14_3m
+
+        # Rule: During entry time or in previous candle if 3min both MFI falling
+        curr_3m_both_falling = (curr_mfi5_3m < prev_mfi5_3m) and (curr_mfi14_3m < prev_mfi14_3m)
+        prev_3m_both_falling = (prev_mfi5_3m < prev_prev_mfi5_3m) and (prev_mfi14_3m < prev_prev_mfi14_3m)
+        is_3m_both_falling = curr_3m_both_falling or prev_3m_both_falling
+
+        # Required Reversal Criteria: Price touches lower BB, both 3m MFI rise, HTF MFI rise
+        lb_target = ctx.lb_3m if ctx.lb_3m > 0 else ctx.lb_20
+        if lb_target > 0 and ctx.low <= lb_target + 2.0:
+            self.lower_bb_touched = True
+
+        # 3m MFI Rising check: Both MFI increasing OR at least MFI(14) increasing
+        is_3m_mfi_rising = ((curr_mfi5_3m > prev_mfi5_3m) and (curr_mfi14_3m >= prev_mfi14_3m)) or (curr_mfi14_3m > prev_mfi14_3m)
+        is_15m_mfi_rising = (ctx.mfi14_15m > ctx.prev_mfi14_15m) or (ctx.mfi14_15m >= ctx.prev_mfi14_15m and ctx.mfi5_15m > ctx.prev_mfi5_15m)
+        is_30m_mfi_rising = (ctx.mfi14_30m > ctx.prev_mfi14_30m) or (ctx.mfi14_30m >= ctx.prev_mfi14_30m and ctx.mfi5_30m > ctx.prev_mfi5_30m)
+        is_htf_mfi_rising = is_15m_mfi_rising or is_30m_mfi_rising
+
+        # Handle 3min falling wait state: wait for price to touch lower BB and 3m MFI to rise and HTF MFI rise
+        if self.waiting_for_bb_pullback:
+            if self.lower_bb_touched and is_3m_mfi_rising and is_htf_mfi_rising and is_bounce_to_open:
+                self.waiting_for_bb_pullback = False
+                self.lower_bb_touched = False
+                retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
+                entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
+                sl = max(ctx.low - 5.0, entry_p - 20.0)
+                target = entry_p + 35.0
+                return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Dynamic Swing Low / Lower BB Touch & 3m+HTF MFI Reversal")
+            return None
+
+        if is_candidate_setup:
+            if is_3m_both_falling:
+                # 3m both MFI falling at entry time or prev candle -> activate wait for lower BB touch + 3m & HTF MFI rise
+                self.waiting_for_bb_pullback = True
+                if self.lower_bb_touched and is_3m_mfi_rising and is_htf_mfi_rising and is_bounce_to_open:
+                    self.waiting_for_bb_pullback = False
+                    self.lower_bb_touched = False
+                    retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
+                    entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
+                    sl = max(ctx.low - 5.0, entry_p - 20.0)
+                    target = entry_p + 35.0
+                    return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Dynamic Swing Low / Lower BB Touch & 3m+HTF MFI Reversal")
+                return None
+            else:
+                # Can enter from middle band only if price corrected at/below MB, bounced to Open, both 3m MFI (or MFI14) rising AND any HTF MFI rising
+                if is_3m_mfi_rising and is_htf_mfi_rising and is_bounce_to_open:
+                    retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
+                    entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
+                    sl = max(ctx.low - 5.0, entry_p - 20.0)
+                    target = entry_p + 35.0
+                    reason_str = "Dynamic Swing Low / Middle Band Entry (3m+HTF MFI Rising)" if is_mb_setup else "Dynamic Swing Low / Retest Bounce (3m+HTF MFI Rising)"
+                    return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason=reason_str)
         return None
 
     def evaluate_exit(self, ctx: MarketContext, position: Position) -> ExitSignal:
@@ -801,10 +876,14 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
         df_3m_calc = df_3m_calc[(df_3m_calc['volume'] > 0.0) & ((df_3m_calc['high'] - df_3m_calc['low']) >= 0.5)].copy().reset_index(drop=True)
         df_3m_calc['mfi5_3m'] = calculate_mfi(df_3m_calc['high'], df_3m_calc['low'], df_3m_calc['close'], df_3m_calc['volume'], period=5)
         df_3m_calc['mfi14_3m'] = calculate_mfi(df_3m_calc['high'], df_3m_calc['low'], df_3m_calc['close'], df_3m_calc['volume'], period=14)
-        _, ub_3m, _ = calculate_bollinger_bands(df_3m_calc['close'], period=20, num_std=2.0)
+        mb_3m, ub_3m, lb_3m = calculate_bollinger_bands(df_3m_calc['close'], period=20, num_std=2.0)
+        df_3m_calc['mb_3m'] = mb_3m
         df_3m_calc['ub_3m'] = ub_3m
+        df_3m_calc['lb_3m'] = lb_3m
         df_3m_calc['prev_mfi5_3m'] = df_3m_calc['mfi5_3m'].shift(1).fillna(50.0)
         df_3m_calc['prev_mfi14_3m'] = df_3m_calc['mfi14_3m'].shift(1).fillna(50.0)
+        df_3m_calc['prev_prev_mfi5_3m'] = df_3m_calc['mfi5_3m'].shift(2).fillna(50.0)
+        df_3m_calc['prev_prev_mfi14_3m'] = df_3m_calc['mfi14_3m'].shift(2).fillna(50.0)
 
         df_eval = pd.merge_ordered(df_3m_calc, df_15m_calc[['timestamp', 'mfi5', 'mfi14', 'prev_mfi5', 'prev_mfi14', 'mb_20', 'ub_20', 'lb_20', 'prev_high', 'prev_low', 'prev_close']], on='timestamp', how='left').ffill()
         df_eval = pd.merge_ordered(df_eval, df_30m_calc[['timestamp', 'mfi5_30m', 'mfi14_30m', 'prev_mfi5_30m', 'prev_mfi14_30m', 'prev_prev_mfi14_30m']], on='timestamp', how='left').ffill()
@@ -813,16 +892,24 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
         df = df_15m_calc.copy()
         df['mfi5_3m'] = df['mfi5']
         df['mfi14_3m'] = df['mfi14']
+        df['mb_3m'] = df['mb_20']
         df['ub_3m'] = df['ub_20']
+        df['lb_3m'] = df['lb_20']
         df['prev_mfi5_3m'] = df['prev_mfi5']
         df['prev_mfi14_3m'] = df['prev_mfi14']
+        df['prev_prev_mfi5_3m'] = df['prev_mfi5']
+        df['prev_prev_mfi14_3m'] = df['prev_mfi14']
         df = pd.merge_ordered(df, df_30m_calc[['timestamp', 'mfi5_30m', 'mfi14_30m', 'prev_mfi5_30m', 'prev_mfi14_30m', 'prev_prev_mfi14_30m']], on='timestamp', how='left').ffill()
 
     df['mfi5_3m'] = df['mfi5_3m'].fillna(df['mfi5'])
     df['mfi14_3m'] = df['mfi14_3m'].fillna(df['mfi14'])
+    df['mb_3m'] = df['mb_3m'].fillna(df['mb_20'])
     df['ub_3m'] = df['ub_3m'].fillna(df['ub_20'])
+    df['lb_3m'] = df['lb_3m'].fillna(df['lb_20'])
     df['prev_mfi5_3m'] = df['prev_mfi5_3m'].fillna(df['prev_mfi5'])
     df['prev_mfi14_3m'] = df['prev_mfi14_3m'].fillna(df['prev_mfi14'])
+    df['prev_prev_mfi5_3m'] = df['prev_prev_mfi5_3m'].fillna(df['prev_mfi5'])
+    df['prev_prev_mfi14_3m'] = df['prev_prev_mfi14_3m'].fillna(df['prev_mfi14'])
 
     # Instantiate the Modular 3-Strategy Suite
     strategies = [
@@ -882,7 +969,11 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
             mfi14_3m=float(row['mfi14_3m']),
             prev_mfi5_3m=float(row['prev_mfi5_3m']),
             prev_mfi14_3m=float(row['prev_mfi14_3m']),
+            prev_prev_mfi5_3m=float(row['prev_prev_mfi5_3m']),
+            prev_prev_mfi14_3m=float(row['prev_prev_mfi14_3m']),
+            mb_3m=float(row['mb_3m']),
             ub_3m=float(row['ub_3m']),
+            lb_3m=float(row['lb_3m']),
             mb_20=float(row['mb_20']),
             ub_20=float(row['ub_20']),
             lb_20=float(row['lb_20']),

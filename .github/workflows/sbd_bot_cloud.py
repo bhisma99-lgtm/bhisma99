@@ -465,35 +465,73 @@ def parse_angel_order_response(res: Any) -> tuple[str | None, str]:
     return None, str(res)
 
 
-def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
-    """Submit real Market Order to Angel One SmartAPI with product type fallback and robust error handling."""
-    qty_val = max(1, int(quantity))
-    for product_type in ("INTRADAY", "CARRYFORWARD"):
+def reauthenticate_smartapi(smart_api: Any) -> bool:
+    """Silently re-authenticates and refreshes JWT & Feed tokens if session expired or collided."""
+    try:
+        import pyotp
+        import requests
+        req_keys = ("ANGEL_ONE_API_KEY", "ANGEL_ONE_CLIENT_CODE", "ANGEL_ONE_PASSWORD", "ANGEL_ONE_TOTP_SECRET")
+        if any(not os.environ.get(k) for k in req_keys):
+            return False
         try:
-            order_params = {
-                "variety": "NORMAL",
-                "tradingsymbol": str(trading_symbol).strip(),
-                "symboltoken": str(symbol_token).strip(),
-                "transactiontype": transaction_type.upper(),
-                "exchange": "BFO",
-                "ordertype": "MARKET",
-                "producttype": product_type,
-                "duration": "DAY",
-                "price": "0",
-                "squareoff": "0",
-                "stoploss": "0",
-                "quantity": str(qty_val),
-            }
-            res = smart_api.placeOrder(order_params)
-            order_id, err_msg = parse_angel_order_response(res)
-            if order_id:
-                logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s (%s) | Order ID: %s", transaction_type, qty_val, trading_symbol, product_type, order_id)
-                send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}*\nQuantity: *{qty_val}*\nOrder ID: `{order_id}`")
-                return order_id
-            else:
-                logger.warning("⚠️ SmartAPI Order rejected with producttype=%s: %s", product_type, err_msg)
-        except Exception as exc:
-            logger.warning("⚠️ Exception submitting order with producttype=%s: %s", product_type, exc)
+            pub_ip = requests.get("https://api.ipify.org", timeout=3.0).text.strip()
+        except Exception:
+            pub_ip = "117.97.214.136"
+        smart_api.clientPublicIP = pub_ip
+        login_response = smart_api.generateSession(
+            os.environ["ANGEL_ONE_CLIENT_CODE"],
+            os.environ["ANGEL_ONE_PASSWORD"],
+            pyotp.TOTP(os.environ["ANGEL_ONE_TOTP_SECRET"]).now(),
+        )
+        if isinstance(login_response, dict) and login_response.get("status") is True and login_response.get("data"):
+            smart_api.feed_token = login_response["data"].get("feedToken")
+            smart_api.auth_token = login_response["data"].get("jwtToken")
+            logger.info("🔄 [AUTH RECOVERY] Successfully re-authenticated SmartAPI session in-flight.")
+            return True
+    except Exception as exc:
+        logger.warning("⚠️ Re-authentication attempt failed: %s", exc)
+    return False
+
+
+def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
+    """Submit real Market Order to Angel One SmartAPI with product type fallback, auto-reauth, and robust error handling."""
+    qty_val = max(1, int(quantity))
+    for attempt in range(1, 3):
+        for product_type in ("INTRADAY", "CARRYFORWARD"):
+            try:
+                order_params = {
+                    "variety": "NORMAL",
+                    "tradingsymbol": str(trading_symbol).strip(),
+                    "symboltoken": str(symbol_token).strip(),
+                    "transactiontype": transaction_type.upper(),
+                    "exchange": "BFO",
+                    "ordertype": "MARKET",
+                    "producttype": product_type,
+                    "duration": "DAY",
+                    "price": "0",
+                    "squareoff": "0",
+                    "stoploss": "0",
+                    "quantity": str(qty_val),
+                }
+                res = smart_api.placeOrder(order_params)
+                order_id, err_msg = parse_angel_order_response(res)
+                if order_id:
+                    logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s (%s) | Order ID: %s", transaction_type, qty_val, trading_symbol, product_type, order_id)
+                    send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}*\nQuantity: *{qty_val}*\nOrder ID: `{order_id}`")
+                    return order_id
+                else:
+                    logger.warning("⚠️ SmartAPI Order rejected with producttype=%s: %s", product_type, err_msg)
+                    err_lower = err_msg.lower()
+                    if any(kw in err_lower for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
+                        logger.info("🔄 Session token error detected during order placement. Triggering instant re-auth...")
+                        reauthenticate_smartapi(smart_api)
+                        break  # Retry loop with refreshed credentials
+            except Exception as exc:
+                exc_str = str(exc)
+                logger.warning("⚠️ Exception submitting order with producttype=%s: %s", product_type, exc)
+                if any(kw in exc_str.lower() for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
+                    reauthenticate_smartapi(smart_api)
+                    break
     
     logger.error("❌ Real Order Submission Failed for %s %d %s", transaction_type, qty_val, trading_symbol)
     send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol}. Check Angel One account permissions.")
@@ -704,31 +742,16 @@ def select_itm_contracts(
     atm_strike = round(spot / strike_step) * strike_step
 
     if option_type == "CE":
-        # Strictly ITM for CE: strike < atm_strike and strike <= spot
-        itm = sorted([c for c in unique_contracts if c.strike < atm_strike and c.strike <= spot], key=lambda c: c.strike, reverse=True)
-        if len(itm) < count:
-            all_sorted = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
-            seen = set(c.strike for c in itm)
-            for c in all_sorted:
-                if c.strike not in seen:
-                    itm.append(c)
-                    seen.add(c.strike)
-                if len(itm) >= count:
-                    break
+        # Strictly ITM for CE: strike < spot (e.g. for spot 76810: 76700, 76600, 76500)
+        itm = sorted([c for c in unique_contracts if c.strike < spot], key=lambda c: c.strike, reverse=True)
+        if not itm:
+            itm = sorted([c for c in unique_contracts if c.strike <= spot + 100.0], key=lambda c: c.strike, reverse=True)
         return itm[:count]
     else:
-        # Strictly ITM for PE: strike > atm_strike
-        itm = sorted([c for c in unique_contracts if c.strike > atm_strike], key=lambda c: c.strike)
-        if len(itm) < count:
-            # Fallback: sorted descending so higher (ITM/ATM) strikes are prioritized over low OTM strikes
-            all_sorted = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
-            seen = set(c.strike for c in itm)
-            for c in all_sorted:
-                if c.strike not in seen:
-                    itm.append(c)
-                    seen.add(c.strike)
-                if len(itm) >= count:
-                    break
+        # Strictly ITM for PE: strike > spot (e.g. for spot 76810: 76900, 77000, 77100)
+        itm = sorted([c for c in unique_contracts if c.strike > spot], key=lambda c: c.strike)
+        if not itm:
+            itm = sorted([c for c in unique_contracts if c.strike >= spot - 100.0], key=lambda c: c.strike)
         return itm[:count]
 
 
@@ -754,7 +777,7 @@ def create_authenticated_smartapi_client() -> Any:
     try:
         pub_ip = requests.get("https://api.ipify.org", timeout=3.0).text.strip()
     except Exception:
-        pub_ip = "117.97.214.136"
+        pub_ip = "117.99.43.62"
 
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
     smart_api.clientPublicIP = pub_ip
@@ -1621,68 +1644,78 @@ def check_active_position_qty(smart_api: Any, symbol_token: str) -> int | None:
 def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str, quantity: int, ltp: float) -> Any:
     """Submit a MARKET sell order first. If it fails, immediately place a LIMIT sell order
     at a lower price (LTP - 10 points) to guarantee immediate execution as a marketable limit order.
-    Supports product type fallback (INTRADAY / CARRYFORWARD).
+    Supports product type fallback (INTRADAY / CARRYFORWARD) and auto session recovery.
     """
     qty_val = max(1, int(quantity))
     
-    # 1. Try Market Sell Order with product type fallback
-    for product_type in ("INTRADAY", "CARRYFORWARD"):
-        try:
-            order_params = {
-                "variety": "NORMAL",
-                "tradingsymbol": str(trading_symbol).strip(),
-                "symboltoken": str(symbol_token).strip(),
-                "transactiontype": "SELL",
-                "exchange": "BFO",
-                "ordertype": "MARKET",
-                "producttype": product_type,
-                "duration": "DAY",
-                "price": "0",
-                "squareoff": "0",
-                "stoploss": "0",
-                "quantity": str(qty_val),
-            }
-            res = smart_api.placeOrder(order_params)
-            order_id, err_msg = parse_angel_order_response(res)
-            if order_id:
-                logger.info("⚡ [MARKET SELL ORDER SUCCESS] (%s) | Order ID: %s", product_type, order_id)
-                send_mobile_alert(f"🔴 *SELL ORDER EXECUTED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nOrder ID: `{order_id}`")
-                return order_id
-            else:
-                logger.warning("⚠️ Market sell rejected with producttype=%s: %s", product_type, err_msg)
-        except Exception as exc:
-            logger.warning("⚠️ Exception on market sell with producttype=%s: %s", product_type, exc)
-    
-    # 2. Try Failsafe Limit Sell Order (Sell at LTP - 10 points to guarantee execution)
-    limit_price = max(2.0, float(ltp) - 10.0)
-    limit_price_str = f"{limit_price:.2f}"
-    
-    for product_type in ("INTRADAY", "CARRYFORWARD"):
-        try:
-            order_params = {
-                "variety": "NORMAL",
-                "tradingsymbol": str(trading_symbol).strip(),
-                "symboltoken": str(symbol_token).strip(),
-                "transactiontype": "SELL",
-                "exchange": "BFO",
-                "ordertype": "LIMIT",
-                "producttype": product_type,
-                "duration": "DAY",
-                "price": limit_price_str,
-                "squareoff": "0",
-                "stoploss": "0",
-                "quantity": str(qty_val),
-            }
-            res = smart_api.placeOrder(order_params)
-            order_id, err_msg = parse_angel_order_response(res)
-            if order_id:
-                logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] (%s) Price: %s | Order ID: %s", product_type, limit_price_str, order_id)
-                send_mobile_alert(f"🔴 *FAILSAFE LIMIT SELL PLACED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nPrice: ₹{limit_price_str}\nOrder ID: `{order_id}`")
-                return order_id
-            else:
-                logger.warning("⚠️ Limit sell rejected with producttype=%s: %s", product_type, err_msg)
-        except Exception as exc:
-            logger.warning("⚠️ Exception on limit sell with producttype=%s: %s", product_type, exc)
+    for attempt in range(1, 3):
+        # 1. Try Market Sell Order with product type fallback
+        for product_type in ("INTRADAY", "CARRYFORWARD"):
+            try:
+                order_params = {
+                    "variety": "NORMAL",
+                    "tradingsymbol": str(trading_symbol).strip(),
+                    "symboltoken": str(symbol_token).strip(),
+                    "transactiontype": "SELL",
+                    "exchange": "BFO",
+                    "ordertype": "MARKET",
+                    "producttype": product_type,
+                    "duration": "DAY",
+                    "price": "0",
+                    "squareoff": "0",
+                    "stoploss": "0",
+                    "quantity": str(qty_val),
+                }
+                res = smart_api.placeOrder(order_params)
+                order_id, err_msg = parse_angel_order_response(res)
+                if order_id:
+                    logger.info("⚡ [MARKET SELL ORDER SUCCESS] (%s) | Order ID: %s", product_type, order_id)
+                    send_mobile_alert(f"🔴 *SELL ORDER EXECUTED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nOrder ID: `{order_id}`")
+                    return order_id
+                else:
+                    logger.warning("⚠️ Market sell rejected with producttype=%s: %s", product_type, err_msg)
+                    err_lower = err_msg.lower()
+                    if any(kw in err_lower for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
+                        logger.info("🔄 Session token error on sell. Triggering instant re-auth...")
+                        reauthenticate_smartapi(smart_api)
+                        break
+            except Exception as exc:
+                exc_str = str(exc)
+                logger.warning("⚠️ Exception on market sell with producttype=%s: %s", product_type, exc)
+                if any(kw in exc_str.lower() for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
+                    reauthenticate_smartapi(smart_api)
+                    break
+        
+        # 2. Try Failsafe Limit Sell Order (Sell at LTP - 10 points to guarantee execution)
+        limit_price = max(2.0, float(ltp) - 10.0)
+        limit_price_str = f"{limit_price:.2f}"
+        
+        for product_type in ("INTRADAY", "CARRYFORWARD"):
+            try:
+                order_params = {
+                    "variety": "NORMAL",
+                    "tradingsymbol": str(trading_symbol).strip(),
+                    "symboltoken": str(symbol_token).strip(),
+                    "transactiontype": "SELL",
+                    "exchange": "BFO",
+                    "ordertype": "LIMIT",
+                    "producttype": product_type,
+                    "duration": "DAY",
+                    "price": limit_price_str,
+                    "squareoff": "0",
+                    "stoploss": "0",
+                    "quantity": str(qty_val),
+                }
+                res = smart_api.placeOrder(order_params)
+                order_id, err_msg = parse_angel_order_response(res)
+                if order_id:
+                    logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] (%s) Price: %s | Order ID: %s", product_type, limit_price_str, order_id)
+                    send_mobile_alert(f"🔴 *FAILSAFE LIMIT SELL PLACED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nPrice: ₹{limit_price_str}\nOrder ID: `{order_id}`")
+                    return order_id
+                else:
+                    logger.warning("⚠️ Limit sell rejected with producttype=%s: %s", product_type, err_msg)
+            except Exception as exc:
+                logger.warning("⚠️ Exception on limit sell with producttype=%s: %s", product_type, exc)
             
     logger.error("❌ Failsafe Sell Failed for %s %d Qty", trading_symbol, qty_val)
     send_mobile_alert(f"⚠️ *CRITICAL: SELL ORDER FAILED*\nCould not execute sell for {trading_symbol}. Please close manually!")
@@ -2040,6 +2073,12 @@ def run_cloud_bot() -> None:
     pending_swap_target = 0.0
     pending_swap_type_str = ""
     pending_swap_time = None
+
+    # Dynamic Swing Low & Bollinger Band State Tracking
+    waiting_for_bb_pullback_ce = False
+    lower_bb_touched_ce = False
+    waiting_for_bb_pullback_pe = False
+    lower_bb_touched_pe = False
 
     # Trailing Stop-Loss Variables
     allow_reentry_live = True
@@ -2410,8 +2449,8 @@ def run_cloud_bot() -> None:
                         # Technical Proximity Check (EPM removed from signal gating)
                         ce_min_dist = 0.0
                         pe_min_dist = 0.0
-                        ce_in_35_range = True
-                        pe_in_35_range = True
+                        ce_in_15_range = True
+                        pe_in_15_range = True
                         
                         weekly_open = get_weekly_open_price(smart_api)
                         
@@ -2450,14 +2489,21 @@ def run_cloud_bot() -> None:
                                     c_low_15m = min(c_low_15m, recent_ce_low)
                                     
                                 mfis_15m, prev_mfis_15m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
+                                mfis_3m, prev_mfis_3m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "THREE_MINUTE", [5, 14])
                                 mfis_1m, prev_mfis_1m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "ONE_MINUTE", [5, 14])
                                 mfis_30m, prev_mfis_30m, prev_prev_mfis_30m, extra_30m_ce = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "THIRTY_MINUTE", [5, 14], return_extra=True)
                                 mfis_60m, prev_mfis_60m = get_mfi_multi_period(smart_api, "BFO", ce_contract.symbol_token, "ONE_HOUR", [5, 14])
+                                mb_3m_ce, ub_3m_ce, lb_3m_ce, c_open_3m_ce, c_low_3m_ce, c_close_3m_ce, prev_c_close_3m_ce, swing_low_3m_ce = get_3m_bollinger_bands(smart_api, "BFO", ce_contract.symbol_token)
                                 
                                 mfi5_15m = mfis_15m.get(5, 50.0)
                                 mfi14_15m = mfis_15m.get(14, 50.0)
                                 prev_mfi5_15m = prev_mfis_15m.get(5, 50.0)
                                 prev_mfi14_15m = prev_mfis_15m.get(14, 50.0)
+
+                                mfi5_3m = mfis_3m.get(5, 50.0)
+                                mfi14_3m = mfis_3m.get(14, 50.0)
+                                prev_mfi5_3m = prev_mfis_3m.get(5, 50.0)
+                                prev_mfi14_3m = prev_mfis_3m.get(14, 50.0)
                                 
                                 mfi5_1m = mfis_1m.get(5, 50.0)
                                 mfi14_1m = mfis_1m.get(14, 50.0)
@@ -2560,15 +2606,53 @@ def run_cloud_bot() -> None:
                                 is_post_breakdown_entry_ce = is_prev_breakdown_candle_ce and is_oversold_15m_mfi_ce and is_any_mfi_increasing_15m_ce and is_1m_mfi_bounce_ce and not is_15m_both_falling_ce and not is_30m_both_falling_ce
 
                                 # 7. Dynamic Agent-based Swing Low First Breakout Retest Entry:
-                                dynamic_swing_low_ce = min(c_low_15m, recent_ce_low)
+                                dynamic_swing_low_ce = min(c_low_15m, recent_ce_low, swing_low_3m_ce if swing_low_3m_ce is not None else c_low_15m)
                                 dynamic_range_ce = max(15.0, previous_ce_high - dynamic_swing_low_ce)
                                 dynamic_tolerance_ce = max(3.0, min(12.0, 0.15 * dynamic_range_ce))
 
                                 is_mfi_falling_from_ob_ce = (prev_mfi5_15m >= 80.0 or prev_mfi14_15m >= 70.0) and (mfi5_15m < prev_mfi5_15m or mfi14_15m < prev_mfi14_15m)
-                                is_swing_ob_blocked_ce = (mfi5_15m >= 80.0 or mfi14_15m >= 68.0) or is_mfi_falling_from_ob_ce
-                                is_swing_retest_level_ce = (c_low_15m <= c_open_15m + dynamic_tolerance_ce) or (c_low_15m <= dynamic_swing_low_ce + dynamic_tolerance_ce) or (c_low_15m <= previous_ce_high and c_low_15m >= previous_ce_high - dynamic_tolerance_ce)
-                                is_dual_mfi_rising_ce = (mfi5_15m > prev_mfi5_15m and mfi14_15m >= prev_mfi14_15m)
-                                is_swing_low_retest_entry_ce = is_swing_retest_level_ce and is_bounce_open_ce and is_dual_mfi_rising_ce and not is_30m_both_falling_ce and not is_swing_ob_blocked_ce
+                                is_swing_ob_blocked_ce = (mfi5_15m >= 80.0 or mfi14_15m >= 68.0) or (ub_3m_ce is not None and live_ce_ltp >= ub_3m_ce - 8.0) or is_mfi_falling_from_ob_ce
+
+                                if is_swing_ob_blocked_ce:
+                                    waiting_for_bb_pullback_ce = False
+                                    lower_bb_touched_ce = False
+
+                                # 3m MFI condition: Both MFI increasing OR at least MFI(14) increasing
+                                is_3m_both_falling_ce = (mfi5_3m < prev_mfi5_3m) and (mfi14_3m < prev_mfi14_3m)
+                                is_3m_mfi_rising_ce = ((mfi5_3m > prev_mfi5_3m) and (mfi14_3m >= prev_mfi14_3m)) or (mfi14_3m > prev_mfi14_3m)
+                                
+                                # HTF MFI Rising check: 15m or 30m MFI rising
+                                is_15m_mfi_rising_ce = (mfi14_15m > prev_mfi14_15m) or (mfi14_15m >= prev_mfi14_15m and mfi5_15m > prev_mfi5_15m)
+                                is_30m_mfi_rising_ce = (mfi14_30m > prev_mfi14_30m) or (mfi14_30m >= prev_mfi14_30m and mfi5_30m > prev_mfi5_30m)
+                                is_htf_mfi_rising_ce = is_15m_mfi_rising_ce or is_30m_mfi_rising_ce
+
+                                # Track Lower Bollinger Band touch
+                                if lb_3m_ce is not None and (live_ce_ltp <= lb_3m_ce + 2.0 or (c_low_3m_ce is not None and c_low_3m_ce <= lb_3m_ce + 2.0) or c_low_15m <= lb_3m_ce + 2.0):
+                                    lower_bb_touched_ce = True
+
+                                # Middle Band Proximity & Correction at or below MB:
+                                is_corrected_to_mb_ce = False
+                                if mb_3m_ce is not None:
+                                    is_corrected_to_mb_ce = (live_ce_ltp <= mb_3m_ce + 1.0 or (c_low_3m_ce is not None and c_low_3m_ce <= mb_3m_ce + 1.0) or c_low_15m <= mb_3m_ce + 1.0)
+                                
+                                # Middle Band entry condition: Correct at/below MB, bounce to open, both 3m MFI (or MFI14) rising AND any HTF MFI rising
+                                is_mb_swing_entry_ce = is_corrected_to_mb_ce and is_bounce_open_ce and is_3m_mfi_rising_ce and is_htf_mfi_rising_ce and not is_swing_ob_blocked_ce
+
+                                # If 3m MFIs are falling, force waiting for lower Bollinger Band touch
+                                if is_3m_both_falling_ce:
+                                    waiting_for_bb_pullback_ce = True
+
+                                is_lower_bb_bounce_entry_ce = waiting_for_bb_pullback_ce and lower_bb_touched_ce and is_bounce_open_ce and is_3m_mfi_rising_ce and is_htf_mfi_rising_ce and not is_swing_ob_blocked_ce
+
+                                # Retest near validated dynamic swing low
+                                is_near_swing_low_ce = (c_low_15m <= dynamic_swing_low_ce + (2.5 * dynamic_tolerance_ce)) or (live_ce_ltp <= dynamic_swing_low_ce + (2.5 * dynamic_tolerance_ce))
+                                is_direct_swing_entry_ce = not waiting_for_bb_pullback_ce and is_near_swing_low_ce and is_bounce_open_ce and is_3m_mfi_rising_ce and is_htf_mfi_rising_ce and not is_swing_ob_blocked_ce
+
+                                is_swing_low_retest_entry_ce = (is_mb_swing_entry_ce or is_lower_bb_bounce_entry_ce or is_direct_swing_entry_ce) and not is_30m_both_falling_ce and not is_swing_ob_blocked_ce
+
+                                if is_swing_low_retest_entry_ce:
+                                    waiting_for_bb_pullback_ce = False
+                                    lower_bb_touched_ce = False
 
                                 # Rule #1 Entry Filter: Block fresh entry if 15m MFI(5) is at 100 / extreme overbought (>=99.0) OR MFI(14) >= 70.0 OR MFI(14) not increasing when MFI(5) >= 90
                                 is_universal_ob_blocked_ce = (mfi5_15m >= 99.0) or (mfi14_15m >= 70.0) or (mfi5_15m >= 90.0 and not (mfi14_15m > prev_mfi14_15m))
@@ -2650,14 +2734,21 @@ def run_cloud_bot() -> None:
                                     p_low_15m = min(p_low_15m, recent_pe_low)
                                     
                                 mfis_15m_pe, prev_mfis_15m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
+                                mfis_3m_pe, prev_mfis_3m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "THREE_MINUTE", [5, 14])
                                 mfis_1m_pe, prev_mfis_1m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "ONE_MINUTE", [5, 14])
                                 mfis_30m_pe, prev_mfis_30m_pe, prev_prev_mfis_30m_pe, extra_30m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "THIRTY_MINUTE", [5, 14], return_extra=True)
                                 mfis_60m_pe, prev_mfis_60m_pe = get_mfi_multi_period(smart_api, "BFO", pe_contract.symbol_token, "ONE_HOUR", [5, 14])
+                                mb_3m_pe, ub_3m_pe, lb_3m_pe, c_open_3m_pe, c_low_3m_pe, c_close_3m_pe, prev_c_close_3m_pe, swing_low_3m_pe = get_3m_bollinger_bands(smart_api, "BFO", pe_contract.symbol_token)
                                 
                                 mfi5_15m_pe = mfis_15m_pe.get(5, 50.0)
                                 mfi14_15m_pe = mfis_15m_pe.get(14, 50.0)
                                 prev_mfi5_15m_pe = prev_mfis_15m_pe.get(5, 50.0)
                                 prev_mfi14_15m_pe = prev_mfis_15m_pe.get(14, 50.0)
+
+                                mfi5_3m_pe = mfis_3m_pe.get(5, 50.0)
+                                mfi14_3m_pe = mfis_3m_pe.get(14, 50.0)
+                                prev_mfi5_3m_pe = prev_mfis_3m_pe.get(5, 50.0)
+                                prev_mfi14_3m_pe = prev_mfis_3m_pe.get(14, 50.0)
                                 
                                 mfi5_1m_pe = mfis_1m_pe.get(5, 50.0)
                                 mfi14_1m_pe = mfis_1m_pe.get(14, 50.0)
@@ -2759,16 +2850,54 @@ def run_cloud_bot() -> None:
                                 is_15m_both_falling_pe = (mfi5_15m_pe < prev_mfi5_15m_pe and mfi14_15m_pe < prev_mfi14_15m_pe)
                                 is_post_breakdown_entry_pe = is_prev_breakdown_candle_pe and is_oversold_15m_mfi_pe and is_any_mfi_increasing_15m_pe and is_1m_mfi_bounce_pe and not is_15m_both_falling_pe and not is_30m_both_falling_pe
 
-                                # 7. Dynamic Agent-based Swing Low First Breakout Retest Entry:
-                                dynamic_swing_low_pe = min(p_low_15m, recent_pe_low)
+                                # 7. Dynamic Agent-based Swing Low First Breakout Retest Entry for PE:
+                                dynamic_swing_low_pe = min(p_low_15m, recent_pe_low, swing_low_3m_pe if swing_low_3m_pe is not None else p_low_15m)
                                 dynamic_range_pe = max(15.0, previous_pe_high - dynamic_swing_low_pe)
                                 dynamic_tolerance_pe = max(3.0, min(12.0, 0.15 * dynamic_range_pe))
 
                                 is_mfi_falling_from_ob_pe = (prev_mfi5_15m_pe >= 80.0 or prev_mfi14_15m_pe >= 70.0) and (mfi5_15m_pe < prev_mfi5_15m_pe or mfi14_15m_pe < prev_mfi14_15m_pe)
-                                is_swing_ob_blocked_pe = (mfi5_15m_pe >= 80.0 or mfi14_15m_pe >= 68.0) or is_mfi_falling_from_ob_pe
-                                is_swing_retest_level_pe = (p_low_15m <= p_open_15m + dynamic_tolerance_pe) or (p_low_15m <= dynamic_swing_low_pe + dynamic_tolerance_pe) or (p_low_15m <= previous_pe_high and p_low_15m >= previous_pe_high - dynamic_tolerance_pe)
-                                is_dual_mfi_rising_pe = (mfi5_15m_pe > prev_mfi5_15m_pe and mfi14_15m_pe >= prev_mfi14_15m_pe)
-                                is_swing_low_retest_entry_pe = is_swing_retest_level_pe and is_bounce_open_pe and is_dual_mfi_rising_pe and not is_30m_both_falling_pe and not is_swing_ob_blocked_pe
+                                is_swing_ob_blocked_pe = (mfi5_15m_pe >= 80.0 or mfi14_15m_pe >= 68.0) or (ub_3m_pe is not None and live_pe_ltp >= ub_3m_pe - 8.0) or is_mfi_falling_from_ob_pe
+
+                                if is_swing_ob_blocked_pe:
+                                    waiting_for_bb_pullback_pe = False
+                                    lower_bb_touched_pe = False
+
+                                # 3m MFI condition: Both MFI increasing OR at least MFI(14) increasing
+                                is_3m_both_falling_pe = (mfi5_3m_pe < prev_mfi5_3m_pe) and (mfi14_3m_pe < prev_mfi14_3m_pe)
+                                is_3m_mfi_rising_pe = ((mfi5_3m_pe > prev_mfi5_3m_pe) and (mfi14_3m_pe >= prev_mfi14_3m_pe)) or (mfi14_3m_pe > prev_mfi14_3m_pe)
+                                
+                                # HTF MFI Rising check: 15m or 30m MFI rising
+                                is_15m_mfi_rising_pe = (mfi14_15m_pe > prev_mfi14_15m_pe) or (mfi14_15m_pe >= prev_mfi14_15m_pe and mfi5_15m_pe > prev_mfi5_15m_pe)
+                                is_30m_mfi_rising_pe = (mfi14_30m_pe > prev_mfi14_30m_pe) or (mfi14_30m_pe >= prev_mfi14_30m_pe and mfi5_30m_pe > prev_mfi5_30m_pe)
+                                is_htf_mfi_rising_pe = is_15m_mfi_rising_pe or is_30m_mfi_rising_pe
+
+                                # Track Lower Bollinger Band touch
+                                if lb_3m_pe is not None and (live_pe_ltp <= lb_3m_pe + 2.0 or (c_low_3m_pe is not None and c_low_3m_pe <= lb_3m_pe + 2.0) or p_low_15m <= lb_3m_pe + 2.0):
+                                    lower_bb_touched_pe = True
+
+                                # Middle Band Proximity & Correction at or below MB:
+                                is_corrected_to_mb_pe = False
+                                if mb_3m_pe is not None:
+                                    is_corrected_to_mb_pe = (live_pe_ltp <= mb_3m_pe + 1.0 or (c_low_3m_pe is not None and c_low_3m_pe <= mb_3m_pe + 1.0) or p_low_15m <= mb_3m_pe + 1.0)
+                                
+                                # Middle Band entry condition: Correct at/below MB, bounce to open, 3m MFI rising AND any HTF MFI rising
+                                is_mb_swing_entry_pe = is_corrected_to_mb_pe and is_bounce_open_pe and is_3m_mfi_rising_pe and is_htf_mfi_rising_pe and not is_swing_ob_blocked_pe
+
+                                # If 3m MFIs are falling, force waiting for lower Bollinger Band touch
+                                if is_3m_both_falling_pe:
+                                    waiting_for_bb_pullback_pe = True
+
+                                is_lower_bb_bounce_entry_pe = waiting_for_bb_pullback_pe and lower_bb_touched_pe and is_bounce_open_pe and is_3m_mfi_rising_pe and is_htf_mfi_rising_pe and not is_swing_ob_blocked_pe
+
+                                # Retest near validated dynamic swing low
+                                is_near_swing_low_pe = (p_low_15m <= dynamic_swing_low_pe + (2.5 * dynamic_tolerance_pe)) or (live_pe_ltp <= dynamic_swing_low_pe + (2.5 * dynamic_tolerance_pe))
+                                is_direct_swing_entry_pe = not waiting_for_bb_pullback_pe and is_near_swing_low_pe and is_bounce_open_pe and is_3m_mfi_rising_pe and is_htf_mfi_rising_pe and not is_swing_ob_blocked_pe
+
+                                is_swing_low_retest_entry_pe = (is_mb_swing_entry_pe or is_lower_bb_bounce_entry_pe or is_direct_swing_entry_pe) and not is_30m_both_falling_pe and not is_swing_ob_blocked_pe
+
+                                if is_swing_low_retest_entry_pe:
+                                    waiting_for_bb_pullback_pe = False
+                                    lower_bb_touched_pe = False
 
                                 # Rule #1 Entry Filter: Block fresh entry if 15m MFI(5) is at 100 / extreme overbought (>=99.0) OR MFI(14) >= 70.0 OR MFI(14) not increasing when MFI(5) >= 90
                                 is_universal_ob_blocked_pe = (mfi5_15m_pe >= 99.0) or (mfi14_15m_pe >= 70.0) or (mfi5_15m_pe >= 90.0 and not (mfi14_15m_pe > prev_mfi14_15m_pe))
@@ -2853,7 +2982,7 @@ def run_cloud_bot() -> None:
                                 bot_state = "CE_LONG"
                                 active_contract = ce_contract
                                 active_entry_price = live_ce_ltp
-                                target_offset_ce = 35.0
+                                target_offset_ce = 55.0
                                 active_target = active_entry_price + target_offset_ce
                                 active_sl = active_sl_ce
                                 entry_time = datetime.now(IST)
@@ -2916,7 +3045,7 @@ def run_cloud_bot() -> None:
                                 bot_state = "PE_LONG"
                                 active_contract = pe_contract
                                 active_entry_price = live_pe_ltp
-                                target_offset_pe = 35.0
+                                target_offset_pe = 55.0
                                 active_target = active_entry_price + target_offset_pe
                                 active_sl = active_sl_pe
                                 entry_time = datetime.now(IST)
