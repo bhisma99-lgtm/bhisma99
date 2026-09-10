@@ -237,9 +237,13 @@ def generate_swing_low_breakout_signals(
     mfi_fast = df["mfi_fast"].values
     mfi_slow = df["mfi_slow"].values
     mb_arr = df["mb_20"].values
+    lb_arr = df["lb_20"].values
     timestamps = [str(ts) for ts in df[time_col].values]
 
     last_signal_bar = -999
+    waiting_for_bb_pullback = False
+    lower_bb_touched = False
+    current_day = ""
 
     for t in range(2 * pivot_window + 1, n):
         rec = active_records[t]
@@ -254,6 +258,12 @@ def generate_swing_low_breakout_signals(
             continue
 
         ts_str = timestamps[t]
+        bar_day = ts_str[:10]
+        if bar_day != current_day:
+            current_day = bar_day
+            waiting_for_bb_pullback = False
+            lower_bb_touched = False
+
         time_part = ts_str.split(" ")[-1][:5] if " " in ts_str else (ts_str.split("T")[-1][:5] if "T" in ts_str else "")
         # Rule: Restrict fresh Entry on or after 15:00:00
         if time_part >= "15:00":
@@ -266,11 +276,14 @@ def generate_swing_low_breakout_signals(
         prev_close = closes[t - 1]
         prev_high = highs[t - 1]
         c_mb = mb_arr[t]
+        c_lb = lb_arr[t]
 
         curr_mfi_f = mfi_fast[t]
         prev_mfi_f = mfi_fast[t - 1]
+        prev_prev_mfi_f = mfi_fast[t - 2] if t >= 2 else prev_mfi_f
         curr_mfi_s = mfi_slow[t]
         prev_mfi_s = mfi_slow[t - 1]
+        prev_prev_mfi_s = mfi_slow[t - 2] if t >= 2 else prev_mfi_s
 
         price_bounced = (c_close >= c_open) and (c_close > prev_close)
 
@@ -290,12 +303,38 @@ def generate_swing_low_breakout_signals(
         is_candle_bullish = (c_close > c_open) and (c_close >= prev_close)
         is_structural_breakout = (c_close >= rec.structural_high) and (c_close > c_open)
 
-        if is_candle_bullish and (is_retest_level or is_structural_breakout):
-            sig_name = "SWING_LOW_RETEST_BOUNCE" if is_retest_level else "SWING_NECKLINE_BREAKOUT"
-            
+        # Rule: If both fast & slow MFI falling at prospective entry or in previous candle -> wait for lower BB touch + MFI rise
+        curr_both_mfi_falling = (curr_mfi_f < prev_mfi_f) and (curr_mfi_s < prev_mfi_s)
+        prev_both_mfi_falling = (prev_mfi_f < prev_prev_mfi_f) and (prev_mfi_s < prev_prev_mfi_s)
+        is_mfi_falling_trigger = curr_both_mfi_falling or prev_both_mfi_falling
+
+        if c_low <= c_lb + 2.0:
+            lower_bb_touched = True
+
+        trigger_signal = False
+        sig_name = "SWING_LOW_RETEST_BOUNCE" if is_retest_level else "SWING_NECKLINE_BREAKOUT"
+
+        if waiting_for_bb_pullback:
+            if lower_bb_touched and is_both_mfi_rising and (c_close >= c_open):
+                trigger_signal = True
+                waiting_for_bb_pullback = False
+                lower_bb_touched = False
+                sig_name = "SWING_LOW_LOWER_BB_REVERSAL"
+        elif is_candle_bullish and (is_retest_level or is_structural_breakout):
+            if is_mfi_falling_trigger:
+                waiting_for_bb_pullback = True
+                if lower_bb_touched and is_both_mfi_rising:
+                    trigger_signal = True
+                    waiting_for_bb_pullback = False
+                    lower_bb_touched = False
+                    sig_name = "SWING_LOW_LOWER_BB_REVERSAL"
+            else:
+                trigger_signal = True
+
+        if trigger_signal:
             # Intraday zone trigger entry price calculation
             retest_zone = rec.pivot_price + swing_low_bounce_zone
-            if sig_name == "SWING_LOW_RETEST_BOUNCE":
+            if sig_name in ("SWING_LOW_RETEST_BOUNCE", "SWING_LOW_LOWER_BB_REVERSAL"):
                 calc_entry = c_open if c_open <= retest_zone else min(c_open, retest_zone)
             else:
                 calc_entry = max(c_open, rec.structural_high + 1.0)

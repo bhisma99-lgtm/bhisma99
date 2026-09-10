@@ -888,6 +888,132 @@ class LiveWSFeed:
             self.is_connected = False
 
 
+_last_api_call_time = 0.0
+
+def safe_get_candle_data(smart_api: Any, params: dict, max_retries: int = 5) -> dict | None:
+    """Fetch candle data from SmartAPI with global rate limiting and exponential backoff retry.
+    Prevents AB1021 'Too many requests' errors.
+    """
+    global _last_api_call_time
+    if smart_api is None:
+        return None
+
+    fetch_fn = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))
+    if not callable(fetch_fn):
+        return None
+
+    # Minimum spacing between API calls to stay well within Angel One rate limits (3 req/sec)
+    min_interval = 0.35  # seconds
+
+    for attempt in range(1, max_retries + 1):
+        now = time.time()
+        elapsed = now - _last_api_call_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_api_call_time = time.time()
+
+        try:
+            res = fetch_fn(params)
+            if isinstance(res, dict):
+                error_code = str(res.get("errorcode") or "")
+                message = str(res.get("message") or "").lower()
+                
+                if "ab1021" in error_code.lower() or "too many requests" in message or "rate limit" in message:
+                    backoff = 0.5 * (2 ** attempt)
+                    logger.warning("⚠️ SmartAPI rate limit hit (AB1021) on attempt %d/%d. Sleeping %.2fs before retry...", attempt, max_retries, backoff)
+                    time.sleep(backoff)
+                    continue
+                
+                if res.get("status") is True and res.get("data"):
+                    return res
+                
+                if attempt < max_retries:
+                    time.sleep(0.3 * attempt)
+                    continue
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if "ab1021" in exc_str or "too many requests" in exc_str:
+                backoff = 0.5 * (2 ** attempt)
+                logger.warning("⚠️ SmartAPI exception (Too many requests) on attempt %d/%d. Sleeping %.2fs...", attempt, max_retries, backoff)
+                time.sleep(backoff)
+            else:
+                logger.debug("Exception in safe_get_candle_data (attempt %d/%d): %s", attempt, max_retries, exc)
+                time.sleep(0.3 * attempt)
+
+    return None
+
+
+def calculate_atr_and_stddev(smart_api: Any, exchange: str, symbol_token: str) -> tuple[float, float]:
+    """Calculate ATR(14) and StdDev(20) dynamically from 15-minute candles."""
+    try:
+        now_dt = datetime.now(IST)
+        from_dt = now_dt - timedelta(days=5)
+        params = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": "FIFTEEN_MINUTE",
+            "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
+            "todate": now_dt.strftime("%Y-%m-%d %H:%M")
+        }
+        res = safe_get_candle_data(smart_api, params)
+        if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+            candles = res["data"]
+            if len(candles) >= 20:
+                highs = [float(c[2]) for c in candles]
+                lows = [float(c[3]) for c in candles]
+                closes = [float(c[4]) for c in candles]
+                
+                # ATR(14)
+                tr_list = []
+                for i in range(1, len(candles)):
+                    tr = max(
+                        highs[i] - lows[i],
+                        abs(highs[i] - closes[i - 1]),
+                        abs(lows[i] - closes[i - 1])
+                    )
+                    tr_list.append(tr)
+                atr_14 = sum(tr_list[-14:]) / 14.0 if len(tr_list) >= 14 else 20.0
+
+                # StdDev(20)
+                sub_closes = closes[-20:]
+                mean_c = sum(sub_closes) / 20.0
+                var_c = sum((x - mean_c) ** 2 for x in sub_closes) / 20.0
+                std_dev_20 = math.sqrt(var_c)
+
+                return atr_14, std_dev_20
+    except Exception as exc:
+        logger.debug("Error calculating ATR and StdDev: %s", exc)
+    return 20.0, 15.0
+
+
+def load_grid_state_epm_low(option_type: str = "CE") -> float | None:
+    """Load the EPM Low from last saved grid state file (grid_state.json or bot_state_memory.json).
+    No hardcoding.
+    """
+    import json
+    for filename in ("grid_state.json", "bot_state_memory.json"):
+        path = Path(filename)
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                
+                # Direct top-level fields in grid_state.json
+                if option_type.upper() == "CE" and "ce_epm_low" in data and data["ce_epm_low"] is not None:
+                    return float(data["ce_epm_low"])
+                if option_type.upper() == "PE" and "pe_epm_low" in data and data["pe_epm_low"] is not None:
+                    return float(data["pe_epm_low"])
+                
+                # Nested grid object in bot_state_memory.json
+                grid_data = data.get("grid") or {}
+                leg_key = "ce_leg" if option_type.upper() == "CE" else "pe_leg"
+                if leg_key in grid_data and "epm_lower_range" in grid_data[leg_key]:
+                    return float(grid_data[leg_key]["epm_lower_range"])
+            except Exception as e:
+                logger.debug("Error reading %s for EPM low: %s", filename, e)
+    return None
+
+
 def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str) -> tuple[float | None, float | None]:
     """Fetch the current 15-minute candle's Open and Low prices from SmartAPI.
     Returns (open, low) on success, or (None, None) on error.
@@ -902,7 +1028,7 @@ def get_current_15m_candle_ohl(smart_api: Any, exchange: str, symbol_token: str)
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if candles:
@@ -930,7 +1056,7 @@ def get_15m_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= period + 1:
@@ -984,7 +1110,7 @@ def get_1h_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 5
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= period + 1:
@@ -1037,7 +1163,7 @@ def get_weekly_open_price(smart_api: Any) -> float:
             "fromdate": from_str,
             "todate": to_str
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if candles and len(candles[0]) >= 2:
@@ -1072,7 +1198,7 @@ def get_mfi_multi_period(smart_api: Any, exchange: str, symbol_token: str, timef
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= 3:
@@ -1145,7 +1271,7 @@ def get_3m_bollinger_bands(smart_api: Any, exchange: str, symbol_token: str, per
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= period:
@@ -1184,7 +1310,7 @@ def check_green_breakout_structure(smart_api: Any, exchange: str, symbol_token: 
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             candles = res["data"]
             if len(candles) >= 2:
@@ -1353,7 +1479,24 @@ def save_bot_memory_full(
         }
         with open("bot_state_memory.json", "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
-        logger.info("💾 Bot state and active trade memory saved successfully.")
+        
+        # Save exact grid state file as grid_state.json
+        grid_state_data = {
+            "date": datetime.now(IST).strftime("%Y-%m-%d"),
+            "grid_time_slot": grid_time_slot,
+            "ce_epm_low": grid.ce_leg.epm_lower_range if grid and grid.ce_leg else None,
+            "pe_epm_low": grid.pe_leg.epm_lower_range if grid and grid.pe_leg else None,
+            "ce_symbol": ce_contract.trading_symbol if ce_contract else "",
+            "pe_symbol": pe_contract.trading_symbol if pe_contract else "",
+            "grid": data.get("grid")
+        }
+        try:
+            with open("grid_state.json", "w", encoding="utf-8") as f_grid:
+                json.dump(grid_state_data, f_grid, indent=4)
+        except Exception as exc_grid:
+            logger.warning("Failed to save grid_state.json: %s", exc_grid)
+
+        logger.info("💾 Bot state, grid state, and active trade memory saved successfully.")
     except Exception as e:
         logger.warning("Failed to save bot active memory: %s", e)
 
@@ -1376,7 +1519,7 @@ def get_current_1m_candles(smart_api: Any, exchange: str, symbol_token: str, cou
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             return res["data"]
     except Exception as e:
@@ -1614,7 +1757,7 @@ def get_current_5m_candles(smart_api: Any, exchange: str, symbol_token: str) -> 
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": now_dt.strftime("%Y-%m-%d %H:%M")
         }
-        res = getattr(smart_api, "getCandleData", getattr(smart_api, "getCandle", None))(params)
+        res = safe_get_candle_data(smart_api, params)
         if isinstance(res, dict) and res.get("status") is True and res.get("data"):
             return res["data"]
     except Exception as e:
@@ -2691,8 +2834,29 @@ def run_cloud_bot() -> None:
                                         is_post_breakdown_entry_ce = False
                                         is_swing_low_retest_entry_ce = False
 
+                                # --- Dynamic EPM Low Bounce LONG Entry Signal (CE) ---
+                                ce_epm_low_saved = load_grid_state_epm_low("CE")
+                                if ce_epm_low_saved is None or ce_epm_low_saved <= 0:
+                                    ce_epm_low_saved = grid.ce_leg.epm_lower_range if (grid and grid.ce_leg) else 0.0
+
+                                atr14_ce, stddev20_ce = calculate_atr_and_stddev(smart_api, "BFO", ce_contract.symbol_token)
+                                dynamic_near_thresh_ce = max(0.25 * atr14_ce, 0.8 * stddev20_ce, 12.0)
+
+                                is_price_near_epm_low_ce = (ce_epm_low_saved > 0.0) and (live_ce_ltp >= ce_epm_low_saved) and ((live_ce_ltp - ce_epm_low_saved) <= dynamic_near_thresh_ce)
+                                prev_low_ce_check = c_low_15m if c_low_15m is not None else live_ce_ltp
+                                is_bouncing_ce = (ce_epm_low_saved > 0.0) and (prev_low_ce_check <= ce_epm_low_saved + dynamic_near_thresh_ce) and (live_ce_ltp >= c_open_15m)
+                                is_mfi_increasing_ce = (mfi14_15m > prev_mfi14_15m) or (mfi5_15m == 0.0) or (prev_mfi5_15m == 0.0 and mfi5_15m > 0.0) or (mfi14_15m <= 25.0 and mfi14_15m > prev_mfi14_15m)
+
+                                is_epm_low_bounce_entry_ce = is_price_near_epm_low_ce and is_bouncing_ce and is_mfi_increasing_ce
+
                                 if not higher_tf_block_ce:
-                                    if is_recovery_reentry_ce:
+                                    if is_epm_low_bounce_entry_ce:
+                                        ce_entry_signal = True
+                                        initial_entry_happened = True
+                                        lot_size = base_lot_size
+                                        active_sl_ce = live_ce_ltp - 20.0
+                                        entry_type_str_ce = f"CE Dynamic EPM Low Bounce LONG Entry (EPM Low: ₹{ce_epm_low_saved:.2f}, Thresh: ₹{dynamic_near_thresh_ce:.1f} | SL-20)"
+                                    elif is_recovery_reentry_ce:
                                         ce_entry_signal = True
                                         recovery_reentry_eligible = False
                                         recovery_reentry_done = True
@@ -2946,8 +3110,29 @@ def run_cloud_bot() -> None:
                                         is_post_breakdown_entry_pe = False
                                         is_swing_low_retest_entry_pe = False
 
+                                # --- Dynamic EPM Low Bounce LONG Entry Signal (PE) ---
+                                pe_epm_low_saved = load_grid_state_epm_low("PE")
+                                if pe_epm_low_saved is None or pe_epm_low_saved <= 0:
+                                    pe_epm_low_saved = grid.pe_leg.epm_lower_range if (grid and grid.pe_leg) else 0.0
+
+                                atr14_pe, stddev20_pe = calculate_atr_and_stddev(smart_api, "BFO", pe_contract.symbol_token)
+                                dynamic_near_thresh_pe = max(0.25 * atr14_pe, 0.8 * stddev20_pe, 12.0)
+
+                                is_price_near_epm_low_pe = (pe_epm_low_saved > 0.0) and (live_pe_ltp >= pe_epm_low_saved) and ((live_pe_ltp - pe_epm_low_saved) <= dynamic_near_thresh_pe)
+                                prev_low_pe_check = p_low_15m if p_low_15m is not None else live_pe_ltp
+                                is_bouncing_pe = (pe_epm_low_saved > 0.0) and (prev_low_pe_check <= pe_epm_low_saved + dynamic_near_thresh_pe) and (live_pe_ltp >= p_open_15m)
+                                is_mfi_increasing_pe = (mfi14_15m_pe > prev_mfi14_15m_pe) or (mfi5_15m_pe == 0.0) or (prev_mfi5_15m_pe == 0.0 and mfi5_15m_pe > 0.0) or (mfi14_15m_pe <= 25.0 and mfi14_15m_pe > prev_mfi14_15m_pe)
+
+                                is_epm_low_bounce_entry_pe = is_price_near_epm_low_pe and is_bouncing_pe and is_mfi_increasing_pe
+
                                 if not higher_tf_block_pe:
-                                    if is_recovery_reentry_pe:
+                                    if is_epm_low_bounce_entry_pe:
+                                        pe_entry_signal = True
+                                        initial_entry_happened = True
+                                        lot_size = base_lot_size
+                                        active_sl_pe = live_pe_ltp - 20.0
+                                        entry_type_str_pe = f"PE Dynamic EPM Low Bounce LONG Entry (EPM Low: ₹{pe_epm_low_saved:.2f}, Thresh: ₹{dynamic_near_thresh_pe:.1f} | SL-20)"
+                                    elif is_recovery_reentry_pe:
                                         pe_entry_signal = True
                                         recovery_reentry_eligible = False
                                         recovery_reentry_done = True
@@ -3330,11 +3515,19 @@ def run_cloud_bot() -> None:
                     # Extreme Overbought High Rejection Exit Rule:
                     is_overbought_high_rejection_ce = (curr_mfi14_ce >= 70.0 or curr_mfi5_ce >= 80.0) and (live_ce_ltp >= previous_ce_high or peak_price >= previous_ce_high) and (live_ce_ltp < previous_ce_high or live_ce_ltp <= c_open_15m or peak_price - live_ce_ltp >= 5.0)
 
+                    # Profit Booking Exit Logic (80+ points OR MFI(14) or both MFI falling in 15m/3m frame)
+                    points_gained_ce = live_ce_ltp - active_entry_price
+                    is_80pt_profit_booking_ce = (points_gained_ce >= 80.0)
+                    mfi_falling_15m_ce = (curr_mfi14_ce < prev_mfi14_ce) or (curr_mfi5_ce < prev_mfi5_ce and curr_mfi14_ce < prev_mfi14_ce)
+                    mfi_falling_3m_ce = (mfi14_3m_ce < prev_mfi14_3m_ce) or (mfi5_3m_ce < prev_mfi5_3m_ce and mfi14_3m_ce < prev_mfi14_3m_ce) if ('mfi14_3m_ce' in locals() and 'prev_mfi14_3m_ce' in locals()) else False
+                    is_mfi_falling_profit_booking_ce = (points_gained_ce > 0.0) and (mfi_falling_15m_ce or mfi_falling_3m_ce)
+                    is_profit_booking_exit_ce = is_80pt_profit_booking_ce or is_mfi_falling_profit_booking_ce
+
                     # Same Day EOD Mandatory Exit (3:25 PM / 3:30 PM cutoff)
                     now_time_str_exit = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live = (now_time_str_exit >= "15:25")
 
-                    is_mfi_exit_triggered_ce = is_eod_exit_live or is_swing_exit_ce or is_overbought_high_rejection_ce or is_breakout_mfi14_or_both_fall_ce or is_breakout_weak_close_retrace_ce or is_breakout_mb_rejection_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_breakout_mfi100_fall_ce or is_breakout_3m_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce or is_same_candle_ub_mfi_fall_exit_ce
+                    is_mfi_exit_triggered_ce = is_profit_booking_exit_ce or is_eod_exit_live or is_swing_exit_ce or is_overbought_high_rejection_ce or is_breakout_mfi14_or_both_fall_ce or is_breakout_weak_close_retrace_ce or is_breakout_mb_rejection_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_breakout_mfi100_fall_ce or is_breakout_3m_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce or is_same_candle_ub_mfi_fall_exit_ce
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_ce_ltp >= surge_target_price)
@@ -3721,11 +3914,19 @@ def run_cloud_bot() -> None:
                     # Extreme Overbought High Rejection Exit Rule PE:
                     is_overbought_high_rejection_pe = (curr_mfi14_pe >= 70.0 or curr_mfi5_pe >= 80.0) and (live_pe_ltp >= previous_pe_high or peak_price >= previous_pe_high) and (live_pe_ltp < previous_pe_high or live_pe_ltp <= p_open_15m or peak_price - live_pe_ltp >= 5.0)
 
+                    # Profit Booking Exit Logic PE (80+ points OR MFI(14) or both MFI falling in 15m/3m frame)
+                    points_gained_pe = live_pe_ltp - active_entry_price
+                    is_80pt_profit_booking_pe = (points_gained_pe >= 80.0)
+                    mfi_falling_15m_pe = (curr_mfi14_pe < prev_mfi14_pe) or (curr_mfi5_pe < prev_mfi5_pe and curr_mfi14_pe < prev_mfi14_pe)
+                    mfi_falling_3m_pe = (mfi14_3m_pe < prev_mfi14_3m_pe) or (mfi5_3m_pe < prev_mfi5_3m_pe and mfi14_3m_pe < prev_mfi14_3m_pe) if ('mfi14_3m_pe' in locals() and 'prev_mfi14_3m_pe' in locals()) else False
+                    is_mfi_falling_profit_booking_pe = (points_gained_pe > 0.0) and (mfi_falling_15m_pe or mfi_falling_3m_pe)
+                    is_profit_booking_exit_pe = is_80pt_profit_booking_pe or is_mfi_falling_profit_booking_pe
+
                     # Same Day EOD Mandatory Exit PE (3:25 PM / 3:30 PM cutoff)
                     now_time_str_exit_pe = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live_pe = (now_time_str_exit_pe >= "15:25")
 
-                    is_mfi_exit_triggered_pe = is_eod_exit_live_pe or is_swing_exit_pe or is_overbought_high_rejection_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_breakout_mfi100_fall_pe or is_breakout_3m_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe or is_same_candle_ub_mfi_fall_exit_pe
+                    is_mfi_exit_triggered_pe = is_profit_booking_exit_pe or is_eod_exit_live_pe or is_swing_exit_pe or is_overbought_high_rejection_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_breakout_mfi100_fall_pe or is_breakout_3m_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe or is_same_candle_ub_mfi_fall_exit_pe
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_pe_ltp >= surge_target_price)
