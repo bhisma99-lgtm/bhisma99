@@ -2740,6 +2740,23 @@ def run_cloud_bot() -> None:
                                         f"👉 *Action*: Stay on High Alert! Monitoring for MFI(5) zero bounce entry."
                                     )
 
+                                # Unblocked High Alert notification for CE EPM Low Bounce / Proximity
+                                ce_epm_low_check = load_grid_state_epm_low("CE")
+                                if ce_epm_low_check is None or ce_epm_low_check <= 0:
+                                    ce_epm_low_check = grid.ce_leg.epm_lower_range if (grid and grid.ce_leg) else 0.0
+
+                                if ce_epm_low_check > 0.0:
+                                    near_thresh_alert_ce = max(12.0, 0.25 * atr14_ce if 'atr14_ce' in locals() else 15.0)
+                                    is_near_epm_alert_ce = (live_ce_ltp >= ce_epm_low_check) and ((live_ce_ltp - ce_epm_low_check) <= near_thresh_alert_ce)
+                                    is_bouncing_alert_ce = (c_low_15m <= ce_epm_low_check + near_thresh_alert_ce) and (live_ce_ltp >= c_open_15m) if c_low_15m else False
+                                    if is_near_epm_alert_ce and is_bouncing_alert_ce and (loop_counter % 30 == 1):
+                                        send_mobile_alert(
+                                            f"🔔 *HIGH ALERT: CE EPM LOW BOUNCE DETECTED*\n\n"
+                                            f"Contract: *{ce_contract.trading_symbol}*\n"
+                                            f"LTP: ₹{live_ce_ltp:.2f} | EPM Low: ₹{ce_epm_low_check:.2f}\n"
+                                            f"👉 *Action*: Price bouncing from EPM Lower boundary! Monitoring recovery signal."
+                                        )
+
                                 is_bounce_open_ce = (live_ce_ltp >= c_open_15m)
                                 
                                 # 1. Dual 15m MFI Pattern for Initial Entry (Must be below Middle Band near Lower Band & 30m MFI 14 not falling)
@@ -3005,6 +3022,23 @@ def run_cloud_bot() -> None:
                                         f"LTP: ₹{live_pe_ltp:.2f}\n"
                                         f"👉 *Action*: Stay on High Alert! Monitoring for MFI(5) zero bounce entry."
                                     )
+
+                                # Unblocked High Alert notification for PE EPM Low Bounce / Proximity
+                                pe_epm_low_check = load_grid_state_epm_low("PE")
+                                if pe_epm_low_check is None or pe_epm_low_check <= 0:
+                                    pe_epm_low_check = grid.pe_leg.epm_lower_range if (grid and grid.pe_leg) else 0.0
+
+                                if pe_epm_low_check > 0.0:
+                                    near_thresh_alert_pe = max(12.0, 0.25 * atr14_pe if 'atr14_pe' in locals() else 15.0)
+                                    is_near_epm_alert_pe = (live_pe_ltp >= pe_epm_low_check) and ((live_pe_ltp - pe_epm_low_check) <= near_thresh_alert_pe)
+                                    is_bouncing_alert_pe = (p_low_15m <= pe_epm_low_check + near_thresh_alert_pe) and (live_pe_ltp >= p_open_15m) if p_low_15m else False
+                                    if is_near_epm_alert_pe and is_bouncing_alert_pe and (loop_counter % 30 == 1):
+                                        send_mobile_alert(
+                                            f"🔔 *HIGH ALERT: PE EPM LOW BOUNCE DETECTED*\n\n"
+                                            f"Contract: *{pe_contract.trading_symbol}*\n"
+                                            f"LTP: ₹{live_pe_ltp:.2f} | EPM Low: ₹{pe_epm_low_check:.2f}\n"
+                                            f"👉 *Action*: Price bouncing from EPM Lower boundary! Monitoring recovery signal."
+                                        )
 
                                 is_bounce_open_pe = (live_pe_ltp >= p_open_15m)
 
