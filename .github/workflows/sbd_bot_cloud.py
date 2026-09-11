@@ -541,13 +541,18 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
 
 
 def send_telegram_voice_alert(message: str) -> None:
-    """Send voice alert as audio clip to Telegram if gtts is available."""
+    """Send voice alert as a native playable Telegram voice note (OGG Opus format)."""
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not bot_token or not chat_id:
         return
         
     msg_upper = message.upper()
+
+    # Explicitly filter out cheat sheet, help, or generic command guides from generating voice clips
+    if "CHEAT SHEET" in msg_upper or "CHEATSHEET" in msg_upper or "COMMANDS" in msg_upper or "HELP" in msg_upper:
+        return
+
     is_event = ("ENTRY" in msg_upper or "EXIT" in msg_upper or "TARGET" in msg_upper or "STOP LOSS" in msg_upper or "TSL" in msg_upper or "SL HIT" in msg_upper or "SIGNAL" in msg_upper or "MFI" in msg_upper or "GRID" in msg_upper or "SWAP" in msg_upper or "BREAKOUT" in msg_upper)
     if not is_event:
         return
@@ -564,10 +569,30 @@ def send_telegram_voice_alert(message: str) -> None:
             return
 
         import io
+        import subprocess
+
         tts = gTTS(text=voice_text, lang='en', slow=False)
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
+        mp3_fp = io.BytesIO()
+        tts.write_to_fp(mp3_fp)
+        mp3_bytes = mp3_fp.getvalue()
+        
+        # Telegram sendVoice requires OGG container with OPUS codec to display native playable voice note
+        voice_bytes = mp3_bytes
+        filename = "alert.ogg"
+        try:
+            proc = subprocess.Popen(
+                ['ffmpeg', '-y', '-i', 'pipe:0', '-c:a', 'libopus', '-b:a', '32k', '-f', 'ogg', 'pipe:1'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            ogg_opus_data, _ = proc.communicate(input=mp3_bytes, timeout=8)
+            if proc.returncode == 0 and len(ogg_opus_data) > 0:
+                voice_bytes = ogg_opus_data
+            else:
+                logger.warning("ffmpeg conversion returned empty or non-zero status; using raw audio.")
+        except Exception as conv_err:
+            logger.warning("Could not convert TTS audio to Opus OGG with ffmpeg: %s", conv_err)
         
         import urllib.request
         boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
@@ -579,10 +604,10 @@ def send_telegram_voice_alert(message: str) -> None:
         body.append(''.encode('utf-8'))
         body.append(str(chat_id).encode('utf-8'))
         body.append(f'--{boundary}'.encode('utf-8'))
-        body.append(f'Content-Disposition: form-data; name="voice"; filename="alert.ogg"'.encode('utf-8'))
+        body.append(f'Content-Disposition: form-data; name="voice"; filename="{filename}"'.encode('utf-8'))
         body.append('Content-Type: audio/ogg'.encode('utf-8'))
         body.append(''.encode('utf-8'))
-        body.append(fp.read())
+        body.append(voice_bytes)
         body.append(f'--{boundary}--'.encode('utf-8'))
         body.append(''.encode('utf-8'))
         
@@ -594,15 +619,16 @@ def send_telegram_voice_alert(message: str) -> None:
         
         with urllib.request.urlopen(req, timeout=8) as response:
             if response.status == 200:
-                logger.info("🎙️ Telegram Voice Alert sent successfully.")
+                logger.info("🎙️ Telegram Voice Alert sent successfully as native playable voice note.")
     except Exception as e:
         logger.warning("Failed to send Telegram Voice Alert: %s", e)
 
 
-def send_mobile_alert(message: str) -> None:
+def send_mobile_alert(message: str, send_voice: bool = True) -> None:
     """Send mobile push notifications via Telegram Bot API or CallMeBot WhatsApp API with automatic fallback."""
     # Send Voice Alert to Telegram if applicable
-    send_telegram_voice_alert(message)
+    if send_voice:
+        send_telegram_voice_alert(message)
 
     # 1. Telegram Push Notification
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -2148,7 +2174,7 @@ def run_cloud_bot() -> None:
             "• *Surge Target (3x Risk):* Sells major portion, moves remaining runner lot SL to Cost Price.\n"
             "• *Practical Target:* Sells major portion, moves remaining runner lot SL to Peak - 20 (wider trailing room)."
         )
-        send_mobile_alert(cheat_sheet_msg)
+        send_mobile_alert(cheat_sheet_msg, send_voice=False)
 
         # Log to Excel
         excel_tracker.add_signal({
@@ -2200,7 +2226,21 @@ def run_cloud_bot() -> None:
     handover_history: list[dict] = []
     entry_time = None
     entry_mfi_falling_15m = False
-    lot_size = 1
+    
+    # Default base lot size is 4 lots (Initial order: 2 lots / 40 Qty, Scale-in order: +2 lots / 40 Qty)
+    # Configurable via environment variables BASE_LOT_SIZE or DEFAULT_LOTS, or --lots argument
+    cli_lots = None
+    for arg in sys.argv:
+        if arg.startswith("--lots="):
+            try:
+                cli_lots = int(arg.split("=")[1])
+            except ValueError:
+                pass
+    if cli_lots:
+        lot_size = cli_lots
+    else:
+        lot_size = int(os.environ.get("BASE_LOT_SIZE", os.environ.get("DEFAULT_LOTS", "4")))
+
     loop_counter = 0
     is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
 
