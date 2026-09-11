@@ -581,7 +581,7 @@ def send_telegram_voice_alert(message: str) -> None:
         filename = "alert.ogg"
         try:
             proc = subprocess.Popen(
-                ['ffmpeg', '-y', '-i', 'pipe:0', '-c:a', 'libopus', '-b:a', '32k', '-f', 'ogg', 'pipe:1'],
+                ['ffmpeg', '-y', '-i', 'pipe:0', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-f', 'ogg', 'pipe:1'],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
@@ -594,6 +594,9 @@ def send_telegram_voice_alert(message: str) -> None:
         except Exception as conv_err:
             logger.warning("Could not convert TTS audio to Opus OGG with ffmpeg: %s", conv_err)
         
+        # Estimate duration in seconds (approx ~3 words per second, min 2s)
+        estimated_duration = max(2, int(len(voice_text.split()) / 3))
+
         import urllib.request
         boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
         url = f"https://api.telegram.org/bot{bot_token}/sendVoice"
@@ -603,6 +606,10 @@ def send_telegram_voice_alert(message: str) -> None:
         body.append(f'Content-Disposition: form-data; name="chat_id"'.encode('utf-8'))
         body.append(''.encode('utf-8'))
         body.append(str(chat_id).encode('utf-8'))
+        body.append(f'--{boundary}'.encode('utf-8'))
+        body.append(f'Content-Disposition: form-data; name="duration"'.encode('utf-8'))
+        body.append(''.encode('utf-8'))
+        body.append(str(estimated_duration).encode('utf-8'))
         body.append(f'--{boundary}'.encode('utf-8'))
         body.append(f'Content-Disposition: form-data; name="voice"; filename="{filename}"'.encode('utf-8'))
         body.append('Content-Type: audio/ogg'.encode('utf-8'))
@@ -3395,14 +3402,26 @@ def run_cloud_bot() -> None:
                         if is_dip_scale_in_ce or is_trend_scale_in_ce:
                             add_lots_ce = max(1, base_lot_size // 2)
                             scale_qty_ce = add_lots_ce * 20
+                            second_entry_price_ce = live_ce_ltp
                             if execution_mode == "LIVE":
                                 submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", scale_qty_ce)
-                            active_entry_price = (active_entry_price + live_ce_ltp) / 2.0
+                            active_entry_price = (active_entry_price + second_entry_price_ce) / 2.0
                             lot_size = lot_size + add_lots_ce
                             staggered_scaled_in = True
                             if is_trend_scale_in_ce:
                                 active_sl = max(active_sl, initial_entry_price) # Move SL to Breakeven Cost
-                            logger.info("🔥 [STAGGERED SCALE-IN CE SUCCESS] Added %d Lots at ₹%.2f | New Avg Entry: ₹%.2f | Total Lots: %d", add_lots_ce, live_ce_ltp, active_entry_price, lot_size)
+
+                            scale_msg_ce = (
+                                f"🚀 *STAGGERED SCALE-IN: SECOND LOT ADDITION*\n\n"
+                                f"Contract: *{active_contract.trading_symbol}*\n"
+                                f"Second Entry Price: *₹{second_entry_price_ce:.2f}*\n"
+                                f"Added Quantity: *+{add_lots_ce} Lot(s)* ({scale_qty_ce} Qty)\n"
+                                f"New Average Price: *₹{active_entry_price:.2f}*\n"
+                                f"Total Position: *{lot_size} Lots* ({lot_size * 20} Qty)\n"
+                                f"Updated Stop Loss: *₹{active_sl:.2f}*"
+                            )
+                            send_mobile_alert(scale_msg_ce)
+                            logger.info("🔥 [STAGGERED SCALE-IN CE SUCCESS] Added %d Lots at ₹%.2f | New Avg Entry: ₹%.2f | Total Lots: %d", add_lots_ce, second_entry_price_ce, active_entry_price, lot_size)
 
                     # Fetch 15m MFIs for diagnostic & SL hold check
                     mfis_15m_ce, prev_mfis_15m_ce = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
@@ -3819,14 +3838,26 @@ def run_cloud_bot() -> None:
                         if is_dip_scale_in_pe or is_trend_scale_in_pe:
                             add_lots_pe = max(1, base_lot_size // 2)
                             scale_qty_pe = add_lots_pe * 20
+                            second_entry_price_pe = live_pe_ltp
                             if execution_mode == "LIVE":
                                 submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", scale_qty_pe)
-                            active_entry_price = (active_entry_price + live_pe_ltp) / 2.0
+                            active_entry_price = (active_entry_price + second_entry_price_pe) / 2.0
                             lot_size = lot_size + add_lots_pe
                             staggered_scaled_in = True
                             if is_trend_scale_in_pe:
                                 active_sl = max(active_sl, initial_entry_price) # Move SL to Breakeven Cost
-                            logger.info("🔥 [STAGGERED SCALE-IN PE SUCCESS] Added %d Lots at ₹%.2f | New Avg Entry: ₹%.2f | Total Lots: %d", add_lots_pe, live_pe_ltp, active_entry_price, lot_size)
+
+                            scale_msg_pe = (
+                                f"🚀 *STAGGERED SCALE-IN: SECOND LOT ADDITION*\n\n"
+                                f"Contract: *{active_contract.trading_symbol}*\n"
+                                f"Second Entry Price: *₹{second_entry_price_pe:.2f}*\n"
+                                f"Added Quantity: *+{add_lots_pe} Lot(s)* ({scale_qty_pe} Qty)\n"
+                                f"New Average Price: *₹{active_entry_price:.2f}*\n"
+                                f"Total Position: *{lot_size} Lots* ({lot_size * 20} Qty)\n"
+                                f"Updated Stop Loss: *₹{active_sl:.2f}*"
+                            )
+                            send_mobile_alert(scale_msg_pe)
+                            logger.info("🔥 [STAGGERED SCALE-IN PE SUCCESS] Added %d Lots at ₹%.2f | New Avg Entry: ₹%.2f | Total Lots: %d", add_lots_pe, second_entry_price_pe, active_entry_price, lot_size)
 
                     # Fetch 15m MFIs for diagnostic & SL hold check
                     mfis_15m_pe_act, prev_mfis_15m_pe_act = get_mfi_multi_period(smart_api, "BFO", active_contract.symbol_token, "FIFTEEN_MINUTE", [5, 14])
