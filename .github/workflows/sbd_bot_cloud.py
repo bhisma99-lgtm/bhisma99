@@ -129,13 +129,13 @@ except ImportError:
 def map_entry_type_to_strategy_name(entry_type_str: str) -> str:
     """Map human-readable entry signal descriptions to standardized Strategy names in Modular 3-Strategy Suite."""
     if not entry_type_str:
-        return "Previous High Breakout Momentum Entry"
+        return "Wick Absorption & Multi-TF Confluence Breakout Entry"
     if "Recovery" in entry_type_str or "Post-SL" in entry_type_str:
         return "One-Time Post-SL Recovery Re-Entry (+2 Lots)"
     elif "Swing Low" in entry_type_str or "SWING" in entry_type_str or "Retest" in entry_type_str:
         return "Dynamic Swing Low First Breakout Retest Entry"
-    elif "Breakout" in entry_type_str or "Previous High" in entry_type_str:
-        return "Previous High Breakout Momentum Entry"
+    elif "Breakout" in entry_type_str or "Wick Absorption" in entry_type_str:
+        return "Wick Absorption & Multi-TF Confluence Breakout Entry"
     elif "Post-Breakdown" in entry_type_str:
         return "Post-Breakdown Oversold Bounce Entry"
     elif "MB Consolidation" in entry_type_str or ("Re-Entry" in entry_type_str and "Recovery" not in entry_type_str):
@@ -143,7 +143,7 @@ def map_entry_type_to_strategy_name(entry_type_str: str) -> str:
     elif "Secondary Reversal" in entry_type_str or "30m Dual MFI" in entry_type_str:
         return "30m Dual MFI Secondary Reversal Option"
     else:
-        return "Previous High Breakout Momentum Entry"
+        return "Wick Absorption & Multi-TF Confluence Breakout Entry"
 
 
 # =========================================================================
@@ -260,6 +260,7 @@ def calculate_master_grid_leg(
     buffer: float = 0.15,
     expiry: str = "",
     trading_symbol: str = "",
+    sl_offset: float = 15.0,
 ) -> MasterGridLeg:
     abs_delta = abs(float(delta))
     ltp_val = float(ltp)
@@ -270,7 +271,7 @@ def calculate_master_grid_leg(
 
     epm_lower_range = ltp_val - (epm_range * abs_delta * buf_val)
     target_epm = ltp_val + (epm_range * abs_delta * buf_val)
-    sl_auto = epm_lower_range - 15.0
+    sl_auto = epm_lower_range - float(sl_offset)
     practical_target = ltp_val + (index_move * abs_delta * 0.21)
 
     return MasterGridLeg(
@@ -287,6 +288,121 @@ def calculate_master_grid_leg(
     )
 
 
+def calculate_dynamic_epm_proximity_threshold(
+    atr14_15m: float,
+    iv_live: float = 13.5,
+    iv_anchor: float = 13.5,
+    delta: float = 0.55,
+    min_thresh: float = 8.0,
+) -> float:
+    """Calculate the adaptive dynamic threshold distance from EPM Low.
+    
+    Formula:
+        theta_dynamic = max(min_thresh, ATR14(15m) * (1 + (IV_live - IV_anchor)/IV_anchor) * |Delta|)
+    """
+    safe_atr = max(5.0, float(atr14_15m)) if atr14_15m and atr14_15m > 0 else 15.0
+    safe_anchor_iv = max(5.0, float(iv_anchor)) if iv_anchor and iv_anchor > 0 else 13.5
+    safe_live_iv = max(5.0, float(iv_live)) if iv_live and iv_live > 0 else safe_anchor_iv
+    abs_delta = abs(float(delta))
+    
+    iv_ratio = 1.0 + ((safe_live_iv - safe_anchor_iv) / safe_anchor_iv)
+    dynamic_dist = safe_atr * iv_ratio * abs_delta * 0.30
+    return max(float(min_thresh), dynamic_dist)
+
+
+def calculate_index_scaled_sl(
+    index_name: str,
+    base_sl_sensex: float = 18.0,
+    spot_price: float = 51500.0,
+    sensex_spot: float = 81500.0,
+    delta: float = 0.60,
+    lot_size: int = 30,
+) -> float:
+    """Calculate volatility & risk-reward parity stop-loss points."""
+    idx = str(index_name).upper().strip()
+    if "SENSEX" in idx:
+        return float(base_sl_sensex)
+    
+    scale_factor = (spot_price / sensex_spot) if sensex_spot > 0 else 0.632
+    spot_move = (base_sl_sensex / max(0.1, delta)) * scale_factor
+    option_volatility_sl = spot_move * max(0.1, delta)
+    
+    if lot_size >= 120:   # 4 Lots BankNifty
+        return round(max(10.0, min(14.0, option_volatility_sl)), 1)
+    elif lot_size >= 90:  # 3 Lots BankNifty
+        return 16.0
+    elif lot_size >= 60:  # 2 Lots BankNifty
+        return 24.0
+    return round(max(10.0, option_volatility_sl), 1)
+
+
+def calculate_lower_wick_absorption(
+    candle_open: float,
+    candle_high: float,
+    candle_low: float,
+    candle_close: float,
+) -> float:
+    """Calculate the lower wick absorption percentage of a candlestick.
+    
+    Formula:
+      range = candle_high - candle_low (guard range > 0)
+      lower_wick = min(candle_open, candle_close) - candle_low
+      wick_absorption_pct = (lower_wick / range) * 100
+    """
+    total_range = float(candle_high) - float(candle_low)
+    if total_range <= 0.0:
+        return 0.0
+    body_bottom = min(float(candle_open), float(candle_close))
+    lower_wick = max(0.0, body_bottom - float(candle_low))
+    return round((lower_wick / total_range) * 100.0, 2)
+
+
+def calculate_confluence_score(
+    ltp: float,
+    epm_low: float,
+    dynamic_thresh: float,
+    mfi14_15m: float,
+    prev_mfi14_15m: float,
+    mfi5_3m: float,
+    prev_mfi5_3m: float,
+    spot: float,
+    spot_open: float,
+    candle_open: float,
+    option_type: str = "CE",
+) -> tuple[int, list[str]]:
+    """Compute 0-100 institutional quality score for EPM Low bounces."""
+    score = 0
+    reasons = []
+    
+    if epm_low > 0.0:
+        if (ltp >= epm_low - 12.0) and (ltp <= epm_low + dynamic_thresh):
+            score += 35
+            reasons.append(f"EPM Proximity (+35): LTP ₹{ltp:.2f} near EPM Low ₹{epm_low:.2f}")
+    
+    mfi_15m_rising = (mfi14_15m > prev_mfi14_15m) or (mfi14_15m <= 35.0 and mfi14_15m >= prev_mfi14_15m)
+    mfi_3m_rising = (mfi5_3m > prev_mfi5_3m) or (mfi5_3m <= 25.0)
+    if mfi_15m_rising and mfi_3m_rising:
+        score += 30
+        reasons.append(f"Dual MFI Rising (+30): 15m MFI {mfi14_15m:.1f} & 3m MFI {mfi5_3m:.1f}")
+    elif mfi_15m_rising or mfi_3m_rising:
+        score += 15
+        reasons.append(f"Single MFI Rising (+15): 15m MFI {mfi14_15m:.1f} / 3m MFI {mfi5_3m:.1f}")
+        
+    is_ce = (option_type.upper() == "CE")
+    if is_ce and (spot >= spot_open - 20.0):
+        score += 20
+        reasons.append(f"Spot Bullish (+20): Spot ₹{spot:.2f} >= Open ₹{spot_open:.2f}")
+    elif not is_ce and (spot <= spot_open + 20.0):
+        score += 20
+        reasons.append(f"Spot Bearish (+20): Spot ₹{spot:.2f} <= Open ₹{spot_open:.2f}")
+        
+    if candle_open > 0.0 and ltp >= candle_open:
+        score += 15
+        reasons.append(f"Candle Open Reclaim (+15): LTP ₹{ltp:.2f} >= Open ₹{candle_open:.2f}")
+        
+    return score, reasons
+
+
 def calculate_master_grid(
     spot: float, vix: float, dte: float,
     ce_ltp: float, ce_delta: float, ce_strike: float,
@@ -296,6 +412,7 @@ def calculate_master_grid(
     pe_legs_data: list[Any] | None = None,
     ce_expiry: str = "", ce_trading_symbol: str = "",
     pe_expiry: str = "", pe_trading_symbol: str = "",
+    sl_offset: float = 15.0,
 ) -> EPMMasterGrid:
     spot_val = float(spot)
     vix_val = float(vix) if float(vix) > 0 else 13.5
@@ -307,8 +424,8 @@ def calculate_master_grid(
     lower_index = spot_val - index_move
     upper_index = spot_val + index_move
 
-    ce_leg = calculate_master_grid_leg("CE", ce_strike, ce_ltp, ce_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=ce_expiry, trading_symbol=ce_trading_symbol)
-    pe_leg = calculate_master_grid_leg("PE", pe_strike, pe_ltp, pe_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=pe_expiry, trading_symbol=pe_trading_symbol)
+    ce_leg = calculate_master_grid_leg("CE", ce_strike, ce_ltp, ce_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=ce_expiry, trading_symbol=ce_trading_symbol, sl_offset=sl_offset)
+    pe_leg = calculate_master_grid_leg("PE", pe_strike, pe_ltp, pe_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=pe_expiry, trading_symbol=pe_trading_symbol, sl_offset=sl_offset)
 
     ce_legs = []
     if ce_legs_data:
@@ -316,7 +433,7 @@ def calculate_master_grid(
             c_ltp, c_delta, c_strike = item[0], item[1], item[2]
             c_exp = item[3] if len(item) > 3 else ce_expiry
             c_sym = item[4] if len(item) > 4 else ce_trading_symbol
-            ce_legs.append(calculate_master_grid_leg("CE", c_strike, c_ltp, c_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=c_exp, trading_symbol=c_sym))
+            ce_legs.append(calculate_master_grid_leg("CE", c_strike, c_ltp, c_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=c_exp, trading_symbol=c_sym, sl_offset=sl_offset))
     else:
         ce_legs = [ce_leg]
 
@@ -326,7 +443,7 @@ def calculate_master_grid(
             p_ltp, p_delta, p_strike = item[0], item[1], item[2]
             p_exp = item[3] if len(item) > 3 else pe_expiry
             p_sym = item[4] if len(item) > 4 else pe_trading_symbol
-            pe_legs.append(calculate_master_grid_leg("PE", p_strike, p_ltp, p_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=p_exp, trading_symbol=p_sym))
+            pe_legs.append(calculate_master_grid_leg("PE", p_strike, p_ltp, p_delta, index_move, time_factor, vix=vix_val, dte=dte_val, buffer=buffer, expiry=p_exp, trading_symbol=p_sym, sl_offset=sl_offset))
     else:
         pe_legs = [pe_leg]
 
@@ -1631,10 +1748,20 @@ def build_epm_grid_and_contracts(
     spot_open: float,
     vix_val: float,
     buffer: float = 0.13,
+    index_name: str = "SENSEX",
+    sl_offset: float | None = None,
 ) -> tuple[EPMMasterGrid, list[OptionContract], list[OptionContract]]:
     """Fetch option contracts, select top 3 ITM strikes for CE and PE, calculate EPM grid for all of them."""
+    is_bn = "BANKNIFTY" in str(index_name).upper()
+    exchange = "NFO" if is_bn else "BFO"
+    search_symbol = "BANKNIFTY" if is_bn else "SENSEX"
+    
+    # Mathematical SL scaling
+    if sl_offset is None:
+        sl_offset = 12.0 if is_bn else 15.0
+
     with contextlib.redirect_stdout(io.StringIO()):
-        search_res = smart_api.searchScrip("BFO", "SENSEX")
+        search_res = smart_api.searchScrip(exchange, search_symbol)
     rows = search_res.get("data", []) if isinstance(search_res, dict) else []
 
     delta_map = load_delta_map()
@@ -1668,7 +1795,7 @@ def build_epm_grid_and_contracts(
             except Exception:
                 pass
 
-        m_sym = re.search(r"(?:BSE)?SENSEX(\d{2})([A-Za-z]{3}|\d|[ONDond])(?:(0[1-9]|[12][0-9]|3[01]))?(\d{4,6})(CE|PE)$", symbol, re.IGNORECASE)
+        m_sym = re.search(r"(?:BSE|NSE)?(?:SENSEX|BANKNIFTY)(\d{2})([A-Za-z]{3}|\d|[ONDond])(?:(0[1-9]|[12][0-9]|3[01]))?(\d{4,6})(CE|PE)$", symbol, re.IGNORECASE)
         if m_sym:
             yy, m_str, dd, str_val, _ = m_sym.groups()
             if not strike_val:
@@ -1701,15 +1828,12 @@ def build_epm_grid_and_contracts(
                 continue
         except Exception:
             continue
-            continue
-
-        logger.debug("Parsed expiry for %s -> %s (raw: %s)", symbol, expiry_val, raw_exp)
 
         dte_days, _ = calculate_dte_sqrt(expiry_val)
         delta_val = calculate_bsm_delta(spot_price, strike_val, dte_days, vix_val, opt_type)
 
         try:
-            c_obj = OptionContract("BFO", symbol, token, expiry_val, strike_val, opt_type, delta_val)
+            c_obj = OptionContract(exchange, symbol, token, expiry_val, strike_val, opt_type, delta_val)
             contracts.append(c_obj)
         except Exception:
             continue
@@ -1717,9 +1841,15 @@ def build_epm_grid_and_contracts(
     ce_contracts = select_itm_contracts(contracts, spot_price, "CE", count=3)
     pe_contracts = select_itm_contracts(contracts, spot_price, "PE", count=3)
 
+    if not ce_contracts or not pe_contracts:
+        logger.warning("⚠️ No ITM contracts found for %s on %s. Using fallback contract.", search_symbol, exchange)
+        # Create minimal fallback contract to avoid indexing crashes
+        ce_contracts = ce_contracts or [OptionContract(exchange, f"{search_symbol}_CE_DUMMY", "0", "2026-09-30", spot_price, "CE", 0.55)]
+        pe_contracts = pe_contracts or [OptionContract(exchange, f"{search_symbol}_PE_DUMMY", "0", "2026-09-30", spot_price, "PE", -0.55)]
+
     ce_legs_data = []
     for c in ce_contracts:
-        res = smart_api.ltpData("BFO", c.trading_symbol, c.symbol_token)
+        res = smart_api.ltpData(exchange, c.trading_symbol, c.symbol_token) if c.symbol_token != "0" else {}
         ltp = float(res["data"]["ltp"]) if isinstance(res, dict) and res.get("data") else 500.0
         c_open = float(res["data"]["open"]) if isinstance(res, dict) and res.get("data") and res["data"].get("open") else ltp
         price_to_use = c_open if current_slot == "09:15" else ltp
@@ -1727,7 +1857,7 @@ def build_epm_grid_and_contracts(
 
     pe_legs_data = []
     for p in pe_contracts:
-        res = smart_api.ltpData("BFO", p.trading_symbol, p.symbol_token)
+        res = smart_api.ltpData(exchange, p.trading_symbol, p.symbol_token) if p.symbol_token != "0" else {}
         ltp = float(res["data"]["ltp"]) if isinstance(res, dict) and res.get("data") else 300.0
         p_open = float(res["data"]["open"]) if isinstance(res, dict) and res.get("data") and res["data"].get("open") else ltp
         price_to_use = p_open if current_slot == "09:15" else ltp
@@ -1747,6 +1877,7 @@ def build_epm_grid_and_contracts(
         ce_trading_symbol=ce_contracts[0].trading_symbol,
         pe_expiry=str(pe_contracts[0].expiry),
         pe_trading_symbol=pe_contracts[0].trading_symbol,
+        sl_offset=sl_offset,
     )
 
     return grid, ce_contracts, pe_contracts
@@ -2537,12 +2668,14 @@ def run_cloud_bot() -> None:
                     send_mobile_alert(f"⚠️ *STOP LOSS UPDATED*\n\nStop Loss manually updated to *₹{active_sl:.2f}* via Telegram.")
                 elif cmd == "ADD" and bot_state in ("CE_LONG", "PE_LONG"):
                     lots_to_add = remote_lots
-                    qty_to_add = lots_to_add * 20
+                    active_lot_units = 30 if (active_contract and "BANKNIFTY" in active_contract.trading_symbol) else 20
+                    qty_to_add = lots_to_add * active_lot_units
                     lot_size += lots_to_add
-                    logger.info("🚀 [TELEGRAM] Adding %d lot(s) (%d Qty) at market price. New total: %d lots.", lots_to_add, qty_to_add, lot_size)
+                    logger.info("🚀 [TELEGRAM] Adding %d lot(s) (%d Qty) at market price to active %s trade. New total: %d lots.", lots_to_add, qty_to_add, active_contract.trading_symbol if active_contract else "trade", lot_size)
                     send_mobile_alert(f"🚀 *ADDING LOTS VIA TELEGRAM*\n\n"
-                                      f"Adding *{lots_to_add} Lot(s)* ({qty_to_add} Qty) at Market Price.\n"
-                                      f"New Total Position: *{lot_size} Lots* ({lot_size * 20} Qty).\n"
+                                      f"Contract: *{active_contract.trading_symbol if active_contract else 'Active Trade'}*\n"
+                                      f"Adding: *{lots_to_add} Lot(s)* ({qty_to_add} Qty) at Market Price.\n"
+                                      f"New Total Position: *{lot_size} Lots* ({lot_size * active_lot_units} Qty).\n"
                                       f"SL maintained at *₹{active_sl:.2f}* until trailing stop is triggered.")
                     if execution_mode == "LIVE" and active_contract:
                         submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_add)
@@ -2771,20 +2904,39 @@ def run_cloud_bot() -> None:
                                 is_30m_mfi14_not_falling_ce = (mfi14_30m >= prev_mfi14_30m)
                                 is_clean_initial_entry_ce = is_initial_mfi_pattern_ce and is_below_mb_ce and is_30m_mfi14_not_falling_ce
 
-                                # 2. Previous High Breakout Momentum Entry Option:
+                                # 2. Lower Wick Absorption & Multi-Timeframe Confluence Breakout Suite
                                 is_30m_both_favorable_ce = (mfi5_30m >= prev_mfi5_30m) and (mfi14_30m >= prev_mfi14_30m + 0.5)
                                 is_both_15m_mfi_rising_ce = (mfi5_15m > prev_mfi5_15m) and (mfi14_15m >= prev_mfi14_15m)
-                                if is_below_mb_ce:
-                                    is_breakout_entry_ce = is_both_15m_mfi_rising_ce and is_bounce_open_ce and (mfi14_15m > 25.0) and (live_ce_ltp > previous_ce_high) and is_30m_both_favorable_ce
-                                else:
-                                    is_breakout_entry_ce = is_both_15m_mfi_rising_ce and (mfi14_15m > 25.0) and (live_ce_ltp > previous_ce_high) and is_30m_both_favorable_ce
                                 
-                                # Rule #3 Entry Filter for Breakout:
-                                is_breakout_opening_too_high_ce = (live_ce_ltp - (c_low_15m - 4.0)) > 20.0 or (live_ce_ltp - previous_ce_high) >= 50.0
-                                is_mfi_overbought_100_ce = (mfi5_15m >= 100.0 or mfi14_15m >= 100.0)
-                                if is_breakout_opening_too_high_ce or is_mfi_overbought_100_ce:
-                                    is_3m_mfi_rising_corr_ce = (mfi5_1m > prev_mfi5_1m + 1.0) and (mfi14_1m >= prev_mfi14_1m)
-                                    is_breakout_entry_ce = is_breakout_entry_ce and is_3m_mfi_rising_corr_ce
+                                # Lower Wick Absorption Calculations (15m & 3m)
+                                c_high_15m_ce = max(live_ce_ltp, c_open_15m) if 'c_open_15m' in locals() and c_open_15m else live_ce_ltp
+                                wick_pct_15m_ce = calculate_lower_wick_absorption(c_open_15m or live_ce_ltp, c_high_15m_ce, c_low_15m or live_ce_ltp, live_ce_ltp)
+                                wick_pct_3m_ce = calculate_lower_wick_absorption(c_open_3m_ce or live_ce_ltp, c_high_3m_ce if 'c_high_3m_ce' in locals() and c_high_3m_ce else live_ce_ltp, c_low_3m_ce if 'c_low_3m_ce' in locals() and c_low_3m_ce else live_ce_ltp, live_ce_ltp) if ('c_open_3m_ce' in locals() and c_open_3m_ce) else wick_pct_15m_ce
+                                
+                                is_15m_wick_absorbed_ce = (wick_pct_15m_ce >= 35.0)
+                                is_3m_wick_absorbed_ce = (wick_pct_3m_ce >= 35.0)
+
+                                # Breakout Condition #1: Lower BB Wick Absorption + Multi-TF Confluence Score (3m >= 55, 15m/Dual 60-70)
+                                is_near_lower_bb_3m_ce = (lb_3m_ce is not None) and (live_ce_ltp <= lb_3m_ce + 5.0 or (c_low_15m is not None and c_low_15m <= lb_3m_ce + 5.0))
+                                is_mfi_htf_supported_ce = is_both_15m_mfi_rising_ce or (mfi14_30m >= prev_mfi14_30m)
+                                
+                                is_3m_confluence_pass_ce = is_3m_wick_absorbed_ce and (conf_score_ce >= 55 if 'conf_score_ce' in locals() else True)
+                                is_15m_dual_confluence_pass_ce = (is_15m_wick_absorbed_ce or (is_3m_wick_absorbed_ce and is_15m_wick_absorbed_ce)) and (60 <= conf_score_ce <= 70 if 'conf_score_ce' in locals() else True)
+                                is_breakout_type1_ce = is_near_lower_bb_3m_ce and is_mfi_htf_supported_ce and (is_3m_confluence_pass_ce or is_15m_dual_confluence_pass_ce)
+
+                                # Breakout Condition #2: Bullish MFI Divergence (Price Lower Low + MFI Higher Low)
+                                is_lower_low_price_ce = (c_low_15m is not None and prev_c_low_15m is not None and c_low_15m < prev_c_low_15m) or (c_low_3m_ce is not None and prev_c_low_3m_ce is not None and c_low_3m_ce < prev_c_low_3m_ce) if ('prev_c_low_15m' in locals() or 'c_low_3m_ce' in locals()) else False
+                                is_higher_low_mfi_ce = (mfi5_15m > prev_mfi5_15m or mfi14_15m > prev_mfi14_15m or mfi5_3m > prev_mfi5_3m)
+                                is_breakout_type2_ce = is_lower_low_price_ce and is_higher_low_mfi_ce and is_bounce_open_ce
+
+                                # Breakout Condition #3: Bollinger Band Squeeze
+                                bb_bandwidth_3m_ce = ((ub_3m_ce - lb_3m_ce) / mb_3m_ce) if (ub_3m_ce and lb_3m_ce and mb_3m_ce and mb_3m_ce > 0) else 1.0
+                                is_bb_squeeze_ce = (bb_bandwidth_3m_ce <= 0.15)
+                                is_squeeze_immediate_ce = is_bb_squeeze_ce and (mb_3m_ce is not None and (live_ce_ltp <= mb_3m_ce + 2.0 or (lb_3m_ce and live_ce_ltp <= lb_3m_ce + 4.0))) and (mfi5_3m > prev_mfi5_3m and mfi14_3m >= prev_mfi14_3m)
+                                is_squeeze_pullback_ce = is_bb_squeeze_ce and (mb_3m_ce is not None and live_ce_ltp <= mb_3m_ce + 2.0 and live_ce_ltp >= c_open_15m) and (mfi14_15m <= 25.0 or mfi5_15m <= 20.0 or is_15m_mfi_rising_ce)
+                                is_breakout_type3_ce = is_squeeze_immediate_ce or is_squeeze_pullback_ce
+
+                                is_breakout_entry_ce = is_breakout_type1_ce or is_breakout_type2_ce or is_breakout_type3_ce
 
                                 # 3. 30-min Dual MFI Reversal Option: Secondary entry only after initial setup, MFI 14 MUST be rising
                                 is_last_30m_breakdown_ce = (prev_close_30m_ce < prev_prev_low_30m_ce) or (c_open_15m > live_ce_ltp)
@@ -2908,23 +3060,46 @@ def run_cloud_bot() -> None:
                                 if ce_epm_low_saved is None or ce_epm_low_saved <= 0:
                                     ce_epm_low_saved = grid.ce_leg.epm_lower_range if (grid and grid.ce_leg) else 0.0
 
-                                atr14_ce, stddev20_ce = calculate_atr_and_stddev(smart_api, "BFO", ce_contract.symbol_token)
-                                dynamic_near_thresh_ce = max(0.25 * atr14_ce, 0.8 * stddev20_ce, 12.0)
+                                atr14_ce, stddev20_ce = calculate_atr_and_stddev(smart_api, getattr(ce_contract, "exchange", "BFO"), ce_contract.symbol_token)
+                                dynamic_near_thresh_ce = calculate_dynamic_epm_proximity_threshold(
+                                    atr14_15m=atr14_ce,
+                                    iv_live=vix_val,
+                                    iv_anchor=13.5,
+                                    delta=ce_contract.delta if ce_contract else 0.55,
+                                    min_thresh=max(10.0, 0.8 * stddev20_ce)
+                                )
 
-                                is_price_near_epm_low_ce = (ce_epm_low_saved > 0.0) and (live_ce_ltp >= ce_epm_low_saved) and ((live_ce_ltp - ce_epm_low_saved) <= dynamic_near_thresh_ce)
+                                is_price_near_epm_low_ce = (ce_epm_low_saved > 0.0) and (live_ce_ltp >= ce_epm_low_saved - 10.0) and ((live_ce_ltp - ce_epm_low_saved) <= dynamic_near_thresh_ce)
                                 prev_low_ce_check = c_low_15m if c_low_15m is not None else live_ce_ltp
                                 is_bouncing_ce = (ce_epm_low_saved > 0.0) and (prev_low_ce_check <= ce_epm_low_saved + dynamic_near_thresh_ce) and (live_ce_ltp >= c_open_15m)
                                 is_mfi_increasing_ce = (mfi14_15m > prev_mfi14_15m) or (mfi5_15m == 0.0) or (prev_mfi5_15m == 0.0 and mfi5_15m > 0.0) or (mfi14_15m <= 25.0 and mfi14_15m > prev_mfi14_15m)
 
-                                is_epm_low_bounce_entry_ce = is_price_near_epm_low_ce and is_bouncing_ce and is_mfi_increasing_ce
+                                # Institutional Confluence Scoring Check (0-100)
+                                conf_score_ce, conf_reasons_ce = calculate_confluence_score(
+                                    ltp=live_ce_ltp,
+                                    epm_low=ce_epm_low_saved,
+                                    dynamic_thresh=dynamic_near_thresh_ce,
+                                    mfi14_15m=mfi14_15m,
+                                    prev_mfi14_15m=prev_mfi14_15m,
+                                    mfi5_3m=mfi5_3m if 'mfi5_3m' in locals() else mfi5_15m,
+                                    prev_mfi5_3m=prev_mfi5_3m if 'prev_mfi5_3m' in locals() else prev_mfi5_15m,
+                                    spot=live_spot,
+                                    spot_open=spot_open,
+                                    candle_open=c_open_15m or live_ce_ltp,
+                                    option_type="CE"
+                                )
+
+                                is_epm_lower_wick_absorbed_ce = (wick_pct_15m_ce >= 35.0) or (wick_pct_3m_ce >= 35.0)
+                                is_epm_low_bounce_entry_ce = ((is_price_near_epm_low_ce and is_bouncing_ce and is_mfi_increasing_ce) or (conf_score_ce >= 80)) and is_epm_lower_wick_absorbed_ce and (conf_score_ce >= 80)
 
                                 if not higher_tf_block_ce:
                                     if is_epm_low_bounce_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
-                                        active_sl_ce = live_ce_ltp - 20.0
-                                        entry_type_str_ce = f"CE Dynamic EPM Low Bounce LONG Entry (EPM Low: ₹{ce_epm_low_saved:.2f}, Thresh: ₹{dynamic_near_thresh_ce:.1f} | SL-20)"
+                                        scaled_sl_pts_ce = calculate_index_scaled_sl("SENSEX", base_sl_sensex=18.0, spot_price=live_spot, sensex_spot=81500.0, delta=abs(ce_contract.delta if ce_contract else 0.60), lot_size=base_lot_size * 20)
+                                        active_sl_ce = live_ce_ltp - scaled_sl_pts_ce
+                                        entry_type_str_ce = f"CE Dynamic EPM Low Bounce LONG Entry (Score: {conf_score_ce}/100, Wick: {wick_pct_15m_ce:.1f}%, EPM Low: ₹{ce_epm_low_saved:.2f} | SL-{scaled_sl_pts_ce:.1f})"
                                     elif is_recovery_reentry_ce:
                                         ce_entry_signal = True
                                         recovery_reentry_eligible = False
@@ -2932,21 +3107,12 @@ def run_cloud_bot() -> None:
                                         lot_size = base_lot_size + 2
                                         active_sl_ce = live_ce_ltp - 20.0
                                         entry_type_str_ce = f"CE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
-                                    elif is_swing_low_retest_entry_ce:
-                                        ce_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_ce = max(dynamic_swing_low_ce - 2.0, live_ce_ltp - 20.0)
-                                        entry_type_str_ce = f"CE Dynamic Swing Low First Breakout Retest Entry (Pivot: ₹{dynamic_swing_low_ce:.2f}, MFI14={mfi14_15m:.1f} | SL: ₹{active_sl_ce:.2f})"
                                     elif is_breakout_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
-                                        if (mfi5_15m > prev_mfi5_15m and mfi14_15m > prev_mfi14_15m):
-                                            active_sl_ce = max(c_low_15m - 15.0, live_ce_ltp - 20.0)
-                                        else:
-                                            active_sl_ce = live_ce_ltp - 20.0
-                                        entry_type_str_ce = f"CE Previous High Breakout Momentum Entry (MFI14={mfi14_15m:.1f} | SL: ₹{active_sl_ce:.2f})"
+                                        active_sl_ce = max(c_low_15m - 15.0, live_ce_ltp - 20.0) if c_low_15m else live_ce_ltp - 20.0
+                                        entry_type_str_ce = f"CE Wick Absorption & Multi-TF Confluence Breakout Entry (Score: {conf_score_ce}/100, Wick: {wick_pct_15m_ce:.1f}% | SL: ₹{active_sl_ce:.2f})"
                                     elif is_direction_aligned_ce and is_clean_initial_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
@@ -3054,20 +3220,39 @@ def run_cloud_bot() -> None:
                                 is_30m_mfi14_not_falling_pe = (mfi14_30m_pe >= prev_mfi14_30m_pe)
                                 is_clean_initial_entry_pe = is_initial_mfi_pattern_pe and is_below_mb_pe and is_30m_mfi14_not_falling_pe
 
-                                # 2. Previous High Breakout Momentum Entry Option:
+                                # 2. Lower Wick Absorption & Multi-Timeframe Confluence Breakout Suite PE
                                 is_30m_both_favorable_pe = (mfi5_30m_pe >= prev_mfi5_30m_pe) and (mfi14_30m_pe >= prev_mfi14_30m_pe + 0.5)
                                 is_both_15m_mfi_rising_pe = (mfi5_15m_pe > prev_mfi5_15m_pe) and (mfi14_15m_pe >= prev_mfi14_15m_pe)
-                                if is_below_mb_pe:
-                                    is_breakout_entry_pe = is_both_15m_mfi_rising_pe and is_bounce_open_pe and (mfi14_15m_pe > 25.0) and (live_pe_ltp > previous_pe_high) and is_30m_both_favorable_pe
-                                else:
-                                    is_breakout_entry_pe = is_both_15m_mfi_rising_pe and (mfi14_15m_pe > 25.0) and (live_pe_ltp > previous_pe_high) and is_30m_both_favorable_pe
                                 
-                                # Rule #3 Entry Filter for Breakout PE:
-                                is_breakout_opening_too_high_pe = (live_pe_ltp - (p_low_15m - 4.0)) > 20.0 or (live_pe_ltp - previous_pe_high) >= 50.0
-                                is_mfi_overbought_100_pe = (mfi5_15m_pe >= 100.0 or mfi14_15m_pe >= 100.0)
-                                if is_breakout_opening_too_high_pe or is_mfi_overbought_100_pe:
-                                    is_3m_mfi_rising_corr_pe = (mfi5_1m_pe > prev_mfi5_1m_pe + 1.0) and (mfi14_1m_pe >= prev_mfi14_1m_pe)
-                                    is_breakout_entry_pe = is_breakout_entry_pe and is_3m_mfi_rising_corr_pe
+                                # Lower Wick Absorption Calculations PE (15m & 3m)
+                                p_high_15m_pe = max(live_pe_ltp, p_open_15m) if 'p_open_15m' in locals() and p_open_15m else live_pe_ltp
+                                wick_pct_15m_pe = calculate_lower_wick_absorption(p_open_15m or live_pe_ltp, p_high_15m_pe, p_low_15m or live_pe_ltp, live_pe_ltp)
+                                wick_pct_3m_pe = calculate_lower_wick_absorption(c_open_3m_pe or live_pe_ltp, c_high_3m_pe if 'c_high_3m_pe' in locals() and c_high_3m_pe else live_pe_ltp, c_low_3m_pe if 'c_low_3m_pe' in locals() and c_low_3m_pe else live_pe_ltp, live_pe_ltp) if ('c_open_3m_pe' in locals() and c_open_3m_pe) else wick_pct_15m_pe
+                                
+                                is_15m_wick_absorbed_pe = (wick_pct_15m_pe >= 35.0)
+                                is_3m_wick_absorbed_pe = (wick_pct_3m_pe >= 35.0)
+
+                                # Breakout Condition #1: Lower BB Wick Absorption + Multi-TF Confluence Score (3m >= 55, 15m/Dual 60-70) PE
+                                is_near_lower_bb_3m_pe = (lb_3m_pe is not None) and (live_pe_ltp <= lb_3m_pe + 5.0 or (p_low_15m is not None and p_low_15m <= lb_3m_pe + 5.0))
+                                is_mfi_htf_supported_pe = is_both_15m_mfi_rising_pe or (mfi14_30m_pe >= prev_mfi14_30m_pe)
+                                
+                                is_3m_confluence_pass_pe = is_3m_wick_absorbed_pe and (conf_score_pe >= 55 if 'conf_score_pe' in locals() else True)
+                                is_15m_dual_confluence_pass_pe = (is_15m_wick_absorbed_pe or (is_3m_wick_absorbed_pe and is_15m_wick_absorbed_pe)) and (60 <= conf_score_pe <= 70 if 'conf_score_pe' in locals() else True)
+                                is_breakout_type1_pe = is_near_lower_bb_3m_pe and is_mfi_htf_supported_pe and (is_3m_confluence_pass_pe or is_15m_dual_confluence_pass_pe)
+
+                                # Breakout Condition #2: Bullish MFI Divergence PE (Price Lower Low + MFI Higher Low)
+                                is_lower_low_price_pe = (p_low_15m is not None and prev_p_low_15m is not None and p_low_15m < prev_p_low_15m) or (c_low_3m_pe is not None and prev_c_low_3m_pe is not None and c_low_3m_pe < prev_c_low_3m_pe) if ('prev_p_low_15m' in locals() or 'c_low_3m_pe' in locals()) else False
+                                is_higher_low_mfi_pe = (mfi5_15m_pe > prev_mfi5_15m_pe or mfi14_15m_pe > prev_mfi14_15m_pe or mfi5_3m_pe > prev_mfi5_3m_pe)
+                                is_breakout_type2_pe = is_lower_low_price_pe and is_higher_low_mfi_pe and is_bounce_open_pe
+
+                                # Breakout Condition #3: Bollinger Band Squeeze PE
+                                bb_bandwidth_3m_pe = ((ub_3m_pe - lb_3m_pe) / mb_3m_pe) if (ub_3m_pe and lb_3m_pe and mb_3m_pe and mb_3m_pe > 0) else 1.0
+                                is_bb_squeeze_pe = (bb_bandwidth_3m_pe <= 0.15)
+                                is_squeeze_immediate_pe = is_bb_squeeze_pe and (mb_3m_pe is not None and (live_pe_ltp <= mb_3m_pe + 2.0 or (lb_3m_pe and live_pe_ltp <= lb_3m_pe + 4.0))) and (mfi5_3m_pe > prev_mfi5_3m_pe and mfi14_3m_pe >= prev_mfi14_3m_pe)
+                                is_squeeze_pullback_pe = is_bb_squeeze_pe and (mb_3m_pe is not None and live_pe_ltp <= mb_3m_pe + 2.0 and live_pe_ltp >= p_open_15m) and (mfi14_15m_pe <= 25.0 or mfi5_15m_pe <= 20.0 or is_15m_mfi_rising_pe)
+                                is_breakout_type3_pe = is_squeeze_immediate_pe or is_squeeze_pullback_pe
+
+                                is_breakout_entry_pe = is_breakout_type1_pe or is_breakout_type2_pe or is_breakout_type3_pe
 
                                 # 3. 30-min Dual MFI Reversal Option: Secondary entry only after initial setup, MFI 14 MUST be rising
                                 is_last_30m_breakdown_pe = (prev_close_30m_pe < prev_prev_low_30m_pe) or (p_open_15m > live_pe_ltp)
@@ -3201,23 +3386,46 @@ def run_cloud_bot() -> None:
                                 if pe_epm_low_saved is None or pe_epm_low_saved <= 0:
                                     pe_epm_low_saved = grid.pe_leg.epm_lower_range if (grid and grid.pe_leg) else 0.0
 
-                                atr14_pe, stddev20_pe = calculate_atr_and_stddev(smart_api, "BFO", pe_contract.symbol_token)
-                                dynamic_near_thresh_pe = max(0.25 * atr14_pe, 0.8 * stddev20_pe, 12.0)
+                                atr14_pe, stddev20_pe = calculate_atr_and_stddev(smart_api, getattr(pe_contract, "exchange", "BFO"), pe_contract.symbol_token)
+                                dynamic_near_thresh_pe = calculate_dynamic_epm_proximity_threshold(
+                                    atr14_15m=atr14_pe,
+                                    iv_live=vix_val,
+                                    iv_anchor=13.5,
+                                    delta=pe_contract.delta if pe_contract else 0.55,
+                                    min_thresh=max(10.0, 0.8 * stddev20_pe)
+                                )
 
-                                is_price_near_epm_low_pe = (pe_epm_low_saved > 0.0) and (live_pe_ltp >= pe_epm_low_saved) and ((live_pe_ltp - pe_epm_low_saved) <= dynamic_near_thresh_pe)
+                                is_price_near_epm_low_pe = (pe_epm_low_saved > 0.0) and (live_pe_ltp >= pe_epm_low_saved - 10.0) and ((live_pe_ltp - pe_epm_low_saved) <= dynamic_near_thresh_pe)
                                 prev_low_pe_check = p_low_15m if p_low_15m is not None else live_pe_ltp
                                 is_bouncing_pe = (pe_epm_low_saved > 0.0) and (prev_low_pe_check <= pe_epm_low_saved + dynamic_near_thresh_pe) and (live_pe_ltp >= p_open_15m)
                                 is_mfi_increasing_pe = (mfi14_15m_pe > prev_mfi14_15m_pe) or (mfi5_15m_pe == 0.0) or (prev_mfi5_15m_pe == 0.0 and mfi5_15m_pe > 0.0) or (mfi14_15m_pe <= 25.0 and mfi14_15m_pe > prev_mfi14_15m_pe)
 
-                                is_epm_low_bounce_entry_pe = is_price_near_epm_low_pe and is_bouncing_pe and is_mfi_increasing_pe
+                                # Institutional Confluence Scoring Check (0-100)
+                                conf_score_pe, conf_reasons_pe = calculate_confluence_score(
+                                    ltp=live_pe_ltp,
+                                    epm_low=pe_epm_low_saved,
+                                    dynamic_thresh=dynamic_near_thresh_pe,
+                                    mfi14_15m=mfi14_15m_pe,
+                                    prev_mfi14_15m=prev_mfi14_15m_pe,
+                                    mfi5_3m=mfi5_3m_pe if 'mfi5_3m_pe' in locals() else mfi5_15m_pe,
+                                    prev_mfi5_3m=prev_mfi5_3m_pe if 'prev_mfi5_3m_pe' in locals() else prev_mfi5_15m_pe,
+                                    spot=live_spot,
+                                    spot_open=spot_open,
+                                    candle_open=p_open_15m or live_pe_ltp,
+                                    option_type="PE"
+                                )
+
+                                is_epm_lower_wick_absorbed_pe = (wick_pct_15m_pe >= 35.0) or (wick_pct_3m_pe >= 35.0)
+                                is_epm_low_bounce_entry_pe = ((is_price_near_epm_low_pe and is_bouncing_pe and is_mfi_increasing_pe) or (conf_score_pe >= 80)) and is_epm_lower_wick_absorbed_pe and (conf_score_pe >= 80)
 
                                 if not higher_tf_block_pe:
                                     if is_epm_low_bounce_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
-                                        active_sl_pe = live_pe_ltp - 20.0
-                                        entry_type_str_pe = f"PE Dynamic EPM Low Bounce LONG Entry (EPM Low: ₹{pe_epm_low_saved:.2f}, Thresh: ₹{dynamic_near_thresh_pe:.1f} | SL-20)"
+                                        scaled_sl_pts_pe = calculate_index_scaled_sl("SENSEX", base_sl_sensex=18.0, spot_price=live_spot, sensex_spot=81500.0, delta=abs(pe_contract.delta if pe_contract else 0.60), lot_size=base_lot_size * 20)
+                                        active_sl_pe = live_pe_ltp - scaled_sl_pts_pe
+                                        entry_type_str_pe = f"PE Dynamic EPM Low Bounce LONG Entry (Score: {conf_score_pe}/100, Wick: {wick_pct_15m_pe:.1f}%, EPM Low: ₹{pe_epm_low_saved:.2f} | SL-{scaled_sl_pts_pe:.1f})"
                                     elif is_recovery_reentry_pe:
                                         pe_entry_signal = True
                                         recovery_reentry_eligible = False
@@ -3225,21 +3433,12 @@ def run_cloud_bot() -> None:
                                         lot_size = base_lot_size + 2
                                         active_sl_pe = live_pe_ltp - 20.0
                                         entry_type_str_pe = f"PE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
-                                    elif is_swing_low_retest_entry_pe:
-                                        pe_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_pe = max(dynamic_swing_low_pe - 2.0, live_pe_ltp - 20.0)
-                                        entry_type_str_pe = f"PE Dynamic Swing Low First Breakout Retest Entry (Pivot: ₹{dynamic_swing_low_pe:.2f}, MFI14={mfi14_15m_pe:.1f} | SL: ₹{active_sl_pe:.2f})"
                                     elif is_breakout_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
-                                        if (mfi5_15m_pe > prev_mfi5_15m_pe and mfi14_15m_pe > prev_mfi14_15m_pe):
-                                            active_sl_pe = max(p_low_15m - 15.0, live_pe_ltp - 20.0)
-                                        else:
-                                            active_sl_pe = live_pe_ltp - 20.0
-                                        entry_type_str_pe = f"PE Previous High Breakout Momentum Entry (MFI14={mfi14_15m_pe:.1f} | SL: ₹{active_sl_pe:.2f})"
+                                        active_sl_pe = max(p_low_15m - 15.0, live_pe_ltp - 20.0) if p_low_15m else live_pe_ltp - 20.0
+                                        entry_type_str_pe = f"PE Wick Absorption & Multi-TF Confluence Breakout Entry (Score: {conf_score_pe}/100, Wick: {wick_pct_15m_pe:.1f}% | SL: ₹{active_sl_pe:.2f})"
                                     elif is_direction_aligned_pe and is_clean_initial_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
@@ -3255,12 +3454,14 @@ def run_cloud_bot() -> None:
                                 active_entry_price = live_ce_ltp
                                 initial_entry_price = live_ce_ltp
                                 staggered_scaled_in = False
-                                lot_size = max(1, base_lot_size // 2) # Initial 2 Lots (40 Qty) Base Order
-                                target_offset_ce = 55.0
+                                is_bn_trade_ce = ("BANKNIFTY" in active_contract.trading_symbol)
+                                active_lot_units = 30 if is_bn_trade_ce else 20
+                                lot_size = 1 if is_bn_trade_ce else max(1, base_lot_size // 2) # 1 Lot (30 Qty) for BankNifty, 2 Lots (40 Qty) for Sensex
+                                target_offset_ce = 35.0 if is_bn_trade_ce else 55.0
                                 active_target = active_entry_price + target_offset_ce
                                 active_sl = active_sl_ce
                                 entry_time = datetime.now(IST)
-                                qty_to_trade = lot_size * 20
+                                qty_to_trade = lot_size * active_lot_units
                                 original_sl_distance = max(15.0, active_entry_price - active_sl)
                                 trailing_active = False
                                 peak_price = active_entry_price
@@ -3321,12 +3522,14 @@ def run_cloud_bot() -> None:
                                 active_entry_price = live_pe_ltp
                                 initial_entry_price = live_pe_ltp
                                 staggered_scaled_in = False
-                                lot_size = max(1, base_lot_size // 2) # Initial 2 Lots (40 Qty) Base Order
-                                target_offset_pe = 55.0
+                                is_bn_trade_pe = ("BANKNIFTY" in active_contract.trading_symbol)
+                                active_lot_units = 30 if is_bn_trade_pe else 20
+                                lot_size = 1 if is_bn_trade_pe else max(1, base_lot_size // 2) # 1 Lot (30 Qty) for BankNifty, 2 Lots (40 Qty) for Sensex
+                                target_offset_pe = 35.0 if is_bn_trade_pe else 55.0
                                 active_target = active_entry_price + target_offset_pe
                                 active_sl = active_sl_pe
                                 entry_time = datetime.now(IST)
-                                qty_to_trade = lot_size * 20
+                                qty_to_trade = lot_size * active_lot_units
                                 original_sl_distance = max(15.0, active_entry_price - active_sl)
                                 trailing_active = False
                                 peak_price = active_entry_price
@@ -3400,12 +3603,14 @@ def run_cloud_bot() -> None:
                         is_trend_scale_in_ce = (peak_price >= initial_entry_price + 15.0) and (live_ce_ltp >= initial_entry_price + 2.0) and (curr_mfi5_ce > prev_mfi5_ce + 1.0)
                         
                         if is_dip_scale_in_ce or is_trend_scale_in_ce:
-                            add_lots_ce = max(1, base_lot_size // 2)
-                            scale_qty_ce = add_lots_ce * 20
+                            is_bn_ce = ("BANKNIFTY" in active_contract.trading_symbol)
+                            active_lot_units = 30 if is_bn_ce else 20
+                            add_lots_ce = 2 if is_bn_ce else max(1, base_lot_size // 2)
+                            scale_qty_ce = add_lots_ce * active_lot_units
                             second_entry_price_ce = live_ce_ltp
                             if execution_mode == "LIVE":
                                 submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", scale_qty_ce)
-                            active_entry_price = (active_entry_price + second_entry_price_ce) / 2.0
+                            active_entry_price = ((initial_entry_price * (lot_size * active_lot_units)) + (second_entry_price_ce * scale_qty_ce)) / ((lot_size + add_lots_ce) * active_lot_units)
                             lot_size = lot_size + add_lots_ce
                             staggered_scaled_in = True
                             if is_trend_scale_in_ce:
@@ -3417,7 +3622,7 @@ def run_cloud_bot() -> None:
                                 f"Second Entry Price: *₹{second_entry_price_ce:.2f}*\n"
                                 f"Added Quantity: *+{add_lots_ce} Lot(s)* ({scale_qty_ce} Qty)\n"
                                 f"New Average Price: *₹{active_entry_price:.2f}*\n"
-                                f"Total Position: *{lot_size} Lots* ({lot_size * 20} Qty)\n"
+                                f"Total Position: *{lot_size} Lots* ({lot_size * active_lot_units} Qty)\n"
                                 f"Updated Stop Loss: *₹{active_sl:.2f}*"
                             )
                             send_mobile_alert(scale_msg_ce)
@@ -3619,37 +3824,31 @@ def run_cloud_bot() -> None:
                     if ("Post-Breakdown" in entry_type_str_ce if 'entry_type_str_ce' in locals() else False) and (curr_mfi5_ce > prev_mfi5_ce and curr_mfi14_ce > prev_mfi14_ce):
                         active_sl = max(active_sl, active_entry_price - 20.0)
 
-                    # Rule: Exit on same candle closing if 15 min any MFI was falling at entry time and price crossed Upper BB with MFI falling
+                    # Rule: Swing High Retest & Hold Logic (Wait for Price to retest near or above last swing high with SL)
+                    # When Price bounces to retest: if MFI(14) supports direction -> HOLD; if MFI(14) does not support -> exit upon Price rejection
                     res_bb_ce_check = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
+                    mb_price_ce = res_bb_ce_check[0] if (res_bb_ce_check and res_bb_ce_check[0]) else None
                     ub_price_ce = res_bb_ce_check[1] if (res_bb_ce_check and res_bb_ce_check[1]) else grid.ce_leg.target_epm
-                    is_ub_crossed_ce = (peak_price >= ub_price_ce) or (live_ce_ltp >= ub_price_ce)
-                    is_mfi_falling_now_ce = (curr_mfi5_ce < prev_mfi5_ce) or (curr_mfi14_ce < prev_mfi14_ce)
-                    is_same_candle_ub_mfi_fall_exit_ce = entry_mfi_falling_15m and is_ub_crossed_ce and is_mfi_falling_now_ce
+                    
+                    swing_high_ref_ce = max(previous_ce_high, peak_price)
+                    is_near_swing_high_retest_ce = (live_ce_ltp >= swing_high_ref_ce - 5.0 or peak_price >= swing_high_ref_ce - 5.0)
+                    is_mfi14_supporting_ce = (curr_mfi14_ce >= prev_mfi14_ce)
+                    is_swing_high_rejection_exit_ce = is_near_swing_high_retest_ce and (not is_mfi14_supporting_ce) and (live_ce_ltp <= peak_price - 4.0 or live_ce_ltp < c_open_15m)
 
-                    # Swing Low Breakout / Retest Strategy Specific Exit Rule:
-                    # User Rule: Wait after entry if MFI(14) is rising till Upper Bollinger band price rejection or MFI down near or above Upper Band
-                    is_swing_trade_ce = ("Swing Low" in entry_type_str_ce if 'entry_type_str_ce' in locals() else False) or (active_strategy_name == "Dynamic Swing Low First Breakout Retest Entry")
-                    is_swing_mfi14_rising_ce = (curr_mfi14_ce > prev_mfi14_ce) or (curr_mfi14_ce >= prev_mfi14_ce and curr_mfi5_ce > prev_mfi5_ce)
-                    is_swing_ub_rejection_ce = (live_ce_ltp >= ub_price_ce - 2.0 or peak_price >= ub_price_ce - 2.0) and (live_ce_ltp <= c_open_15m or peak_price - live_ce_ltp >= 5.0)
-                    is_swing_mfi_down_near_ub_ce = (peak_price >= ub_price_ce - 5.0 or live_ce_ltp >= ub_price_ce - 5.0 or curr_mfi14_ce >= 65.0) and (curr_mfi14_ce < prev_mfi14_ce or curr_mfi5_ce < prev_mfi5_ce)
-                    is_swing_exit_ce = is_swing_trade_ce and ((is_swing_mfi14_rising_ce and (is_swing_ub_rejection_ce or is_swing_mfi_down_near_ub_ce) and (live_ce_ltp >= active_entry_price + 8.0 or peak_price >= active_entry_price + 15.0)) or (not is_swing_mfi14_rising_ce and is_both_mfi_falling_ce))
-
-                    # Extreme Overbought High Rejection Exit Rule:
-                    is_overbought_high_rejection_ce = (curr_mfi14_ce >= 70.0 or curr_mfi5_ce >= 80.0) and (live_ce_ltp >= previous_ce_high or peak_price >= previous_ce_high) and (live_ce_ltp < previous_ce_high or live_ce_ltp <= c_open_15m or peak_price - live_ce_ltp >= 5.0)
-
-                    # Profit Booking Exit Logic (80+ points OR MFI(14) or both MFI falling in 15m/3m frame)
+                    # Rule: Middle Band Support & 100+ Profit Booking Logic
+                    # Hold trade if price is taking support or closing above middle band OR if middle line is increasing OR Profit reached 100+
                     points_gained_ce = live_ce_ltp - active_entry_price
-                    is_80pt_profit_booking_ce = (points_gained_ce >= 80.0)
+                    is_mb_support_holding_ce = (mb_price_ce is not None and live_ce_ltp >= mb_price_ce)
+                    is_profit_100_plus_ce = (points_gained_ce >= 100.0)
+                    is_hold_support_ce = is_mb_support_holding_ce and not is_profit_100_plus_ce
+                    
                     mfi_falling_15m_ce = (curr_mfi14_ce < prev_mfi14_ce) or (curr_mfi5_ce < prev_mfi5_ce and curr_mfi14_ce < prev_mfi14_ce)
-                    mfi_falling_3m_ce = (mfi14_3m_ce < prev_mfi14_3m_ce) or (mfi5_3m_ce < prev_mfi5_3m_ce and mfi14_3m_ce < prev_mfi14_3m_ce) if ('mfi14_3m_ce' in locals() and 'prev_mfi14_3m_ce' in locals()) else False
-                    is_mfi_falling_profit_booking_ce = (points_gained_ce > 0.0) and (mfi_falling_15m_ce or mfi_falling_3m_ce)
-                    is_profit_booking_exit_ce = is_80pt_profit_booking_ce or is_mfi_falling_profit_booking_ce
+                    is_profit_booking_exit_ce = is_profit_100_plus_ce or ((points_gained_ce > 0.0) and mfi_falling_15m_ce and not is_hold_support_ce)
 
-                    # Same Day EOD Mandatory Exit (3:25 PM / 3:30 PM cutoff)
                     now_time_str_exit = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live = (now_time_str_exit >= "15:25")
 
-                    is_mfi_exit_triggered_ce = is_profit_booking_exit_ce or is_eod_exit_live or is_swing_exit_ce or is_overbought_high_rejection_ce or is_breakout_mfi14_or_both_fall_ce or is_breakout_weak_close_retrace_ce or is_breakout_mb_rejection_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_breakout_mfi100_fall_ce or is_breakout_3m_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce or is_same_candle_ub_mfi_fall_exit_ce
+                    is_mfi_exit_triggered_ce = is_profit_booking_exit_ce or is_eod_exit_live or is_swing_high_rejection_exit_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_ce_ltp >= surge_target_price)
@@ -3836,12 +4035,14 @@ def run_cloud_bot() -> None:
                         is_trend_scale_in_pe = (peak_price >= initial_entry_price + 15.0) and (live_pe_ltp >= initial_entry_price + 2.0) and (curr_mfi5_pe > prev_mfi5_pe + 1.0)
                         
                         if is_dip_scale_in_pe or is_trend_scale_in_pe:
-                            add_lots_pe = max(1, base_lot_size // 2)
-                            scale_qty_pe = add_lots_pe * 20
+                            is_bn_pe = ("BANKNIFTY" in active_contract.trading_symbol)
+                            active_lot_units = 30 if is_bn_pe else 20
+                            add_lots_pe = 2 if is_bn_pe else max(1, base_lot_size // 2)
+                            scale_qty_pe = add_lots_pe * active_lot_units
                             second_entry_price_pe = live_pe_ltp
                             if execution_mode == "LIVE":
                                 submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", scale_qty_pe)
-                            active_entry_price = (active_entry_price + second_entry_price_pe) / 2.0
+                            active_entry_price = ((initial_entry_price * (lot_size * active_lot_units)) + (second_entry_price_pe * scale_qty_pe)) / ((lot_size + add_lots_pe) * active_lot_units)
                             lot_size = lot_size + add_lots_pe
                             staggered_scaled_in = True
                             if is_trend_scale_in_pe:
@@ -3853,7 +4054,7 @@ def run_cloud_bot() -> None:
                                 f"Second Entry Price: *₹{second_entry_price_pe:.2f}*\n"
                                 f"Added Quantity: *+{add_lots_pe} Lot(s)* ({scale_qty_pe} Qty)\n"
                                 f"New Average Price: *₹{active_entry_price:.2f}*\n"
-                                f"Total Position: *{lot_size} Lots* ({lot_size * 20} Qty)\n"
+                                f"Total Position: *{lot_size} Lots* ({lot_size * active_lot_units} Qty)\n"
                                 f"Updated Stop Loss: *₹{active_sl:.2f}*"
                             )
                             send_mobile_alert(scale_msg_pe)
@@ -4048,37 +4249,31 @@ def run_cloud_bot() -> None:
                     if ("Post-Breakdown" in entry_type_str_pe if 'entry_type_str_pe' in locals() else False) and (curr_mfi5_pe > prev_mfi5_pe and curr_mfi14_pe > prev_mfi14_pe):
                         active_sl = max(active_sl, active_entry_price - 20.0)
 
-                    # Rule: Exit on same candle closing if 15 min any MFI was falling at entry time and price crossed Upper BB with MFI falling
+                    # Rule: Swing High Retest & Hold Logic PE (Wait for Price to retest near or above last swing high with SL)
+                    # When Price bounces to retest: if MFI(14) supports direction -> HOLD; if MFI(14) does not support -> exit upon Price rejection
                     res_bb_pe_check = get_3m_bollinger_bands(smart_api, "BFO", active_contract.symbol_token)
+                    mb_price_pe = res_bb_pe_check[0] if (res_bb_pe_check and res_bb_pe_check[0]) else None
                     ub_price_pe = res_bb_pe_check[1] if (res_bb_pe_check and res_bb_pe_check[1]) else grid.pe_leg.target_epm
-                    is_ub_crossed_pe = (peak_price >= ub_price_pe) or (live_pe_ltp >= ub_price_pe)
-                    is_mfi_falling_now_pe = (curr_mfi5_pe < prev_mfi5_pe) or (curr_mfi14_pe < prev_mfi14_pe)
-                    is_same_candle_ub_mfi_fall_exit_pe = entry_mfi_falling_15m and is_ub_crossed_pe and is_mfi_falling_now_pe
+                    
+                    swing_high_ref_pe = max(previous_pe_high, peak_price)
+                    is_near_swing_high_retest_pe = (live_pe_ltp >= swing_high_ref_pe - 5.0 or peak_price >= swing_high_ref_pe - 5.0)
+                    is_mfi14_supporting_pe = (curr_mfi14_pe >= prev_mfi14_pe)
+                    is_swing_high_rejection_exit_pe = is_near_swing_high_retest_pe and (not is_mfi14_supporting_pe) and (live_pe_ltp <= peak_price - 4.0 or live_pe_ltp < p_open_15m)
 
-                    # Swing Low Breakout / Retest Strategy Specific Exit Rule PE:
-                    # User Rule: Wait after entry if MFI(14) is rising till Upper Bollinger band price rejection or MFI down near or above Upper Band
-                    is_swing_trade_pe = ("Swing Low" in entry_type_str_pe if 'entry_type_str_pe' in locals() else False) or (active_strategy_name == "Dynamic Swing Low First Breakout Retest Entry")
-                    is_swing_mfi14_rising_pe = (curr_mfi14_pe > prev_mfi14_pe) or (curr_mfi14_pe >= prev_mfi14_pe and curr_mfi5_pe > prev_mfi5_pe)
-                    is_swing_ub_rejection_pe = (live_pe_ltp >= ub_price_pe - 2.0 or peak_price >= ub_price_pe - 2.0) and (live_pe_ltp <= p_open_15m or peak_price - live_pe_ltp >= 5.0)
-                    is_swing_mfi_down_near_ub_pe = (peak_price >= ub_price_pe - 5.0 or live_pe_ltp >= ub_price_pe - 5.0 or curr_mfi14_pe >= 65.0) and (curr_mfi14_pe < prev_mfi14_pe or curr_mfi5_pe < prev_mfi5_pe)
-                    is_swing_exit_pe = is_swing_trade_pe and ((is_swing_mfi14_rising_pe and (is_swing_ub_rejection_pe or is_swing_mfi_down_near_ub_pe) and (live_pe_ltp >= active_entry_price + 8.0 or peak_price >= active_entry_price + 15.0)) or (not is_swing_mfi14_rising_pe and (curr_mfi5_pe < prev_mfi5_pe and curr_mfi14_pe < prev_mfi14_pe)))
-
-                    # Extreme Overbought High Rejection Exit Rule PE:
-                    is_overbought_high_rejection_pe = (curr_mfi14_pe >= 70.0 or curr_mfi5_pe >= 80.0) and (live_pe_ltp >= previous_pe_high or peak_price >= previous_pe_high) and (live_pe_ltp < previous_pe_high or live_pe_ltp <= p_open_15m or peak_price - live_pe_ltp >= 5.0)
-
-                    # Profit Booking Exit Logic PE (80+ points OR MFI(14) or both MFI falling in 15m/3m frame)
+                    # Rule: Middle Band Support & 100+ Profit Booking Logic PE
+                    # Hold trade if price is taking support or closing above middle band OR if middle line is increasing OR Profit reached 100+
                     points_gained_pe = live_pe_ltp - active_entry_price
-                    is_80pt_profit_booking_pe = (points_gained_pe >= 80.0)
+                    is_mb_support_holding_pe = (mb_price_pe is not None and live_pe_ltp >= mb_price_pe)
+                    is_profit_100_plus_pe = (points_gained_pe >= 100.0)
+                    is_hold_support_pe = is_mb_support_holding_pe and not is_profit_100_plus_pe
+                    
                     mfi_falling_15m_pe = (curr_mfi14_pe < prev_mfi14_pe) or (curr_mfi5_pe < prev_mfi5_pe and curr_mfi14_pe < prev_mfi14_pe)
-                    mfi_falling_3m_pe = (mfi14_3m_pe < prev_mfi14_3m_pe) or (mfi5_3m_pe < prev_mfi5_3m_pe and mfi14_3m_pe < prev_mfi14_3m_pe) if ('mfi14_3m_pe' in locals() and 'prev_mfi14_3m_pe' in locals()) else False
-                    is_mfi_falling_profit_booking_pe = (points_gained_pe > 0.0) and (mfi_falling_15m_pe or mfi_falling_3m_pe)
-                    is_profit_booking_exit_pe = is_80pt_profit_booking_pe or is_mfi_falling_profit_booking_pe
+                    is_profit_booking_exit_pe = is_profit_100_plus_pe or ((points_gained_pe > 0.0) and mfi_falling_15m_pe and not is_hold_support_pe)
 
-                    # Same Day EOD Mandatory Exit PE (3:25 PM / 3:30 PM cutoff)
                     now_time_str_exit_pe = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live_pe = (now_time_str_exit_pe >= "15:25")
 
-                    is_mfi_exit_triggered_pe = is_profit_booking_exit_pe or is_eod_exit_live_pe or is_swing_exit_pe or is_overbought_high_rejection_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_breakout_mfi100_fall_pe or is_breakout_3m_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe or is_same_candle_ub_mfi_fall_exit_pe
+                    is_mfi_exit_triggered_pe = is_profit_booking_exit_pe or is_eod_exit_live_pe or is_swing_high_rejection_exit_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_pe_ltp >= surge_target_price)
