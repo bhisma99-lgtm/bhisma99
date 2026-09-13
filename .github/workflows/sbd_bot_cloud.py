@@ -97,6 +97,7 @@ try:
         PositionSide,
         MarketContext,
         InitialDualMFILowerBandBounceStrategy,
+        WickAbsorptionMultiTFConfluenceBreakoutStrategy,
         PreviousHighBreakoutMomentumStrategy,
         DualMFI30mSecondaryReversalStrategy,
         MFITrendReentryMBStrategy,
@@ -116,6 +117,7 @@ except ImportError:
         PositionSide,
         MarketContext,
         InitialDualMFILowerBandBounceStrategy,
+        WickAbsorptionMultiTFConfluenceBreakoutStrategy,
         PreviousHighBreakoutMomentumStrategy,
         DualMFI30mSecondaryReversalStrategy,
         MFITrendReentryMBStrategy,
@@ -3746,24 +3748,36 @@ def run_cloud_bot() -> None:
                     # 2. Exhaustion / Sideways Regime (Overbought / Retest Failure): Tight Smart Trailing
                     is_strong_institutional_trend_ce = (is_mfi14_rising_15m_ce or curr_mfi14_ce >= 50.0) and (mfi14_30m >= prev_mfi14_30m)
 
-                    if is_strong_institutional_trend_ce:
-                        # Allow price to breathe/dip to Middle Band; trail only after major +50pt surge
-                        if favorable_gain_ce >= 70.0:
-                            active_sl = max(active_sl, peak_price - 20.0) # Lock major runner gains
-                        elif favorable_gain_ce >= 50.0:
-                            active_sl = max(active_sl, active_entry_price + 20.0)
-                        elif favorable_gain_ce >= 30.0:
-                            active_sl = max(active_sl, active_entry_price) # Move to Cost Price / Breakeven
+                    # Check Trailing Restrictions:
+                    # 1. Swing Low -> Don't trail until upper bollinger band reached
+                    # 2. 5X+ -> Don't trail at all before MFI(14) reaches overbought zone
+                    ce_ub_reached = (peak_price >= grid.ce_leg.target_epm - 5.0 or live_ce_ltp >= grid.ce_leg.target_epm - 5.0)
+                    ce_mfi14_ob = (curr_mfi14_ce >= 70.0)
+                    can_trail_ce = True
+                    if "Swing Low" in (entry_type_str_ce if 'entry_type_str_ce' in locals() else ""):
+                        can_trail_ce = ce_ub_reached
+                    elif "5X+" in (entry_type_str_ce if 'entry_type_str_ce' in locals() else "") or "EPM Floor" in (entry_type_str_ce if 'entry_type_str_ce' in locals() else ""):
+                        can_trail_ce = ce_mfi14_ob
+
+                    if can_trail_ce:
+                        if is_strong_institutional_trend_ce:
+                            # Allow price to breathe/dip to Middle Band; trail only after major +50pt surge
+                            if favorable_gain_ce >= 70.0:
+                                active_sl = max(active_sl, peak_price - 20.0) # Lock major runner gains
+                            elif favorable_gain_ce >= 50.0:
+                                active_sl = max(active_sl, active_entry_price + 20.0)
+                            elif favorable_gain_ce >= 30.0:
+                                active_sl = max(active_sl, active_entry_price) # Move to Cost Price / Breakeven
+                            else:
+                                active_sl = max(active_sl, active_entry_price - 20.0) # Hold risk floor on MB dips
                         else:
-                            active_sl = max(active_sl, active_entry_price - 20.0) # Hold risk floor on MB dips
-                    else:
-                        # Sideways / Exhaustion Regime: Active Smart Trailing
-                        if favorable_gain_ce >= 40.0:
-                            active_sl = max(active_sl, active_entry_price + 15.0)
-                        elif favorable_gain_ce >= 20.0:
-                            active_sl = max(active_sl, active_entry_price + 3.0)
-                        elif favorable_gain_ce >= 12.0:
-                            active_sl = max(active_sl, active_entry_price - 5.0)
+                            # Sideways / Exhaustion Regime: Active Smart Trailing
+                            if favorable_gain_ce >= 40.0:
+                                active_sl = max(active_sl, active_entry_price + 15.0)
+                            elif favorable_gain_ce >= 20.0:
+                                active_sl = max(active_sl, active_entry_price + 3.0)
+                            elif favorable_gain_ce >= 12.0:
+                                active_sl = max(active_sl, active_entry_price - 5.0)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
@@ -4178,24 +4192,36 @@ def run_cloud_bot() -> None:
                     # 2. Exhaustion / Sideways Regime (Overbought / Retest Failure): Tight Smart Trailing
                     is_strong_institutional_trend_pe = (is_mfi14_rising_15m_pe or curr_mfi14_pe >= 50.0) and (mfi14_30m_pe >= prev_mfi14_30m_pe)
 
-                    if is_strong_institutional_trend_pe:
-                        # Allow price to breathe/dip to Middle Band; trail only after major +50pt surge
-                        if favorable_gain_pe >= 70.0:
-                            active_sl = max(active_sl, peak_price - 20.0) # Lock major runner gains
-                        elif favorable_gain_pe >= 50.0:
-                            active_sl = max(active_sl, active_entry_price + 20.0)
-                        elif favorable_gain_pe >= 30.0:
-                            active_sl = max(active_sl, active_entry_price) # Move to Cost Price / Breakeven
+                    # Check Trailing Restrictions PE:
+                    # 1. Swing Low -> Don't trail until upper bollinger band reached
+                    # 2. 5X+ -> Don't trail at all before MFI(14) reaches overbought zone
+                    pe_ub_reached = (peak_price >= grid.pe_leg.target_epm - 5.0 or live_pe_ltp >= grid.pe_leg.target_epm - 5.0)
+                    pe_mfi14_ob = (curr_mfi14_pe >= 70.0)
+                    can_trail_pe = True
+                    if "Swing Low" in (entry_type_str_pe if 'entry_type_str_pe' in locals() else ""):
+                        can_trail_pe = pe_ub_reached
+                    elif "5X+" in (entry_type_str_pe if 'entry_type_str_pe' in locals() else "") or "EPM Floor" in (entry_type_str_pe if 'entry_type_str_pe' in locals() else ""):
+                        can_trail_pe = pe_mfi14_ob
+
+                    if can_trail_pe:
+                        if is_strong_institutional_trend_pe:
+                            # Allow price to breathe/dip to Middle Band; trail only after major +50pt surge
+                            if favorable_gain_pe >= 70.0:
+                                active_sl = max(active_sl, peak_price - 20.0) # Lock major runner gains
+                            elif favorable_gain_pe >= 50.0:
+                                active_sl = max(active_sl, active_entry_price + 20.0)
+                            elif favorable_gain_pe >= 30.0:
+                                active_sl = max(active_sl, active_entry_price) # Move to Cost Price / Breakeven
+                            else:
+                                active_sl = max(active_sl, active_entry_price - 20.0) # Hold risk floor on MB dips
                         else:
-                            active_sl = max(active_sl, active_entry_price - 20.0) # Hold risk floor on MB dips
-                    else:
-                        # Sideways / Exhaustion Regime: Active Smart Trailing
-                        if favorable_gain_pe >= 40.0:
-                            active_sl = max(active_sl, active_entry_price + 15.0)
-                        elif favorable_gain_pe >= 20.0:
-                            active_sl = max(active_sl, active_entry_price + 3.0)
-                        elif favorable_gain_pe >= 12.0:
-                            active_sl = max(active_sl, active_entry_price - 5.0)
+                            # Sideways / Exhaustion Regime: Active Smart Trailing
+                            if favorable_gain_pe >= 40.0:
+                                active_sl = max(active_sl, active_entry_price + 15.0)
+                            elif favorable_gain_pe >= 20.0:
+                                active_sl = max(active_sl, active_entry_price + 3.0)
+                            elif favorable_gain_pe >= 12.0:
+                                active_sl = max(active_sl, active_entry_price - 5.0)
 
                     # Calculate 3X risk-reward Take Profit target based on original risk distance
                     surge_target_price = active_entry_price + (3 * original_sl_distance)
