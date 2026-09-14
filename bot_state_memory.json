@@ -1,0 +1,126 @@
+{
+    "date": "2026-09-14",
+    "trades_completed": 0,
+    "grid_time_slot": "12:15",
+    "bot_state": "IDLE",
+    "active_entry_price": 0.0,
+    "active_sl": 0.0,
+    "active_target": 0.0,
+    "peak_price": 0.0,
+    "trailing_active": false,
+    "offloaded": false,
+    "lot_size": 1,
+    "entry_time": null,
+    "entry_mfi_falling_15m": false,
+    "active_strategy": "",
+    "initial_hard_sl": 0.0,
+    "handover_history": [],
+    "grid": {
+        "spot": 74781.76,
+        "vix": 12.29,
+        "dte": 4.0,
+        "index_move": 962.1241778288904,
+        "ce_leg": {
+            "strike": 74700.0,
+            "ltp": 609.65,
+            "delta": 0.560044952135627,
+            "target_epm": 804.6280529464342,
+            "epm_lower_range": 414.67194705356576,
+            "sl_auto": 399.67194705356576,
+            "practical_target": 722.8048857153492,
+            "option_type": "CE"
+        },
+        "pe_leg": {
+            "strike": 74800.0,
+            "ltp": 410.2,
+            "delta": 0.4812158382509043,
+            "target_epm": 475.37033243689393,
+            "epm_lower_range": 345.02966756310605,
+            "sl_auto": 330.02966756310605,
+            "practical_target": 507.42777247443223,
+            "option_type": "PE"
+        },
+        "ce_legs": [
+            {
+                "strike": 74700.0,
+                "ltp": 609.65,
+                "delta": 0.560044952135627,
+                "target_epm": 804.6280529464342,
+                "epm_lower_range": 414.67194705356576,
+                "sl_auto": 399.67194705356576,
+                "practical_target": 722.8048857153492,
+                "option_type": "CE"
+            },
+            {
+                "strike": 74600.0,
+                "ltp": 672.85,
+                "delta": 0.6007169747534874,
+                "target_epm": 946.0968225788076,
+                "epm_lower_range": 399.60317742119247,
+                "sl_auto": 384.60317742119247,
+                "practical_target": 794.2225083429371,
+                "option_type": "CE"
+            },
+            {
+                "strike": 74500.0,
+                "ltp": 740.3,
+                "delta": 0.6403756841747317,
+                "target_epm": 1116.192761929979,
+                "epm_lower_range": 364.4072380700209,
+                "sl_auto": 349.4072380700209,
+                "practical_target": 869.6853950140276,
+                "option_type": "CE"
+            }
+        ],
+        "pe_legs": [
+            {
+                "strike": 74800.0,
+                "ltp": 410.2,
+                "delta": 0.4812158382509043,
+                "target_epm": 475.37033243689393,
+                "epm_lower_range": 345.02966756310605,
+                "sl_auto": 330.02966756310605,
+                "practical_target": 507.42777247443223,
+                "option_type": "PE"
+            },
+            {
+                "strike": 74900.0,
+                "ltp": 451.75,
+                "delta": 0.5226236947310707,
+                "target_epm": 544.979490947065,
+                "epm_lower_range": 358.5205090529351,
+                "sl_auto": 343.5205090529351,
+                "practical_target": 557.3440674474759,
+                "option_type": "PE"
+            },
+            {
+                "strike": 75000.0,
+                "ltp": 497.75,
+                "delta": 0.5637339479485115,
+                "target_epm": 629.4390647996967,
+                "epm_lower_range": 366.06093520030333,
+                "sl_auto": 351.06093520030333,
+                "practical_target": 611.6502328486812,
+                "option_type": "PE"
+            }
+        ]
+    },
+    "ce_contract": {
+        "exchange": "BFO",
+        "trading_symbol": "SENSEX2691774700CE",
+        "symbol_token": "877075",
+        "expiry": "2026-09-17",
+        "strike": 74700.0,
+        "option_type": "CE",
+        "delta": 0.560044952135627
+    },
+    "pe_contract": {
+        "exchange": "BFO",
+        "trading_symbol": "SENSEX2691774800PE",
+        "symbol_token": "876539",
+        "expiry": "2026-09-17",
+        "strike": 74800.0,
+        "option_type": "PE",
+        "delta": -0.4812158382509043
+    }
+}

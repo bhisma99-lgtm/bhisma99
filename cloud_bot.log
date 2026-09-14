@@ -1,0 +1,23 @@
+2026-09-14 21:37:57,913 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-14 21:38:01,960 [INFO] 🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot 12:15...
+2026-09-14 21:38:11,279 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-14 21:38:11,279 [INFO] =========================================================================
+2026-09-14 21:38:11,279 [INFO] SENSEX CLOUD BOT - MASTER GRID INITIALIZED (Slot: 12:15 IST)
+2026-09-14 21:38:11,279 [INFO] Spot LTP: 74781.76 (Open: 74309.16) | VIX: 12.29% | DTE: 4.00 | Move: ±962.12
+2026-09-14 21:38:11,279 [INFO] CE Strike 74700 (ITM 1 | Exp: 2026-09-17): Price ₹609.65 | Delta 0.560 | Lower ₹414.67 | Upper ₹804.63 | SL ₹399.67 | Pr. ₹722.80
+2026-09-14 21:38:11,279 [INFO] CE Strike 74600 (ITM 2 | Exp: 2026-09-17): Price ₹672.85 | Delta 0.601 | Lower ₹399.60 | Upper ₹946.10 | SL ₹384.60 | Pr. ₹794.22
+2026-09-14 21:38:11,279 [INFO] CE Strike 74500 (ITM 3 | Exp: 2026-09-17): Price ₹740.30 | Delta 0.640 | Lower ₹364.41 | Upper ₹1116.19 | SL ₹349.41 | Pr. ₹869.69
+2026-09-14 21:38:11,279 [INFO] PE Strike 74800 (ITM 1 | Exp: 2026-09-17): Price ₹410.20 | Delta 0.481 | Lower ₹345.03 | Upper ₹475.37 | SL ₹330.03 | Pr. ₹507.43
+2026-09-14 21:38:11,279 [INFO] PE Strike 74900 (ITM 2 | Exp: 2026-09-17): Price ₹451.75 | Delta 0.523 | Lower ₹358.52 | Upper ₹544.98 | SL ₹343.52 | Pr. ₹557.34
+2026-09-14 21:38:11,279 [INFO] PE Strike 75000 (ITM 3 | Exp: 2026-09-17): Price ₹497.75 | Delta 0.564 | Lower ₹366.06 | Upper ₹629.44 | SL ₹351.06 | Pr. ₹611.65
+2026-09-14 21:38:11,279 [INFO] =========================================================================
+2026-09-14 21:38:13,471 [WARNING] Could not convert TTS audio to Opus OGG with ffmpeg: [Errno 2] No such file or directory: 'ffmpeg'
+2026-09-14 21:38:15,536 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-14 21:38:16,132 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-14 21:38:16,726 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-14 21:38:17,303 [INFO] ⚡ Background WebSocket Feed initialized.
+2026-09-14 21:38:17,303 [INFO] 🔄 Entering continuous monitoring loop (Mode: PAPER, Refreshing 1s in-place)...
+2026-09-14 21:38:17,763 [INFO] 🕒 [MARKET CLOSE] Current time is after 3:30 PM IST. Shutting down bot gracefully...
+2026-09-14 21:38:18,180 [INFO] Websocket connected
+2026-09-14 21:38:18,180 [INFO] 🟢 WebSocket Connection Opened successfully!
+2026-09-14 21:38:18,361 [INFO] 📱 Telegram push notification sent successfully.
