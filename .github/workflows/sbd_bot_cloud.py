@@ -88,44 +88,27 @@ MIN_EV_HANDOVER_DELTA: float = 4.0      # Minimum EV delta improvement (+4.0 pts
 
 # Import Modular 3-Strategy Suite with Dynamic In-Flight Handover
 try:
-    from state_machine_handover_engine import (
-        BaseStrategy,
-        EntrySignal,
-        ExitSignal,
-        HandoverDecision,
-        Position,
-        PositionSide,
-        MarketContext,
-        InitialDualMFILowerBandBounceStrategy,
-        WickAbsorptionMultiTFConfluenceBreakoutStrategy,
-        PreviousHighBreakoutMomentumStrategy,
-        DualMFI30mSecondaryReversalStrategy,
-        MFITrendReentryMBStrategy,
-        PostSLRecoveryReentryStrategy,
-        PostBreakdownOversoldBounceStrategy,
-        DynamicSwingLowBreakoutRetestStrategy,
-        StateMachineHandoverEngine,
-    )
+    import state_machine_handover_engine as sm_engine
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from state_machine_handover_engine import (
-        BaseStrategy,
-        EntrySignal,
-        ExitSignal,
-        HandoverDecision,
-        Position,
-        PositionSide,
-        MarketContext,
-        InitialDualMFILowerBandBounceStrategy,
-        WickAbsorptionMultiTFConfluenceBreakoutStrategy,
-        PreviousHighBreakoutMomentumStrategy,
-        DualMFI30mSecondaryReversalStrategy,
-        MFITrendReentryMBStrategy,
-        PostSLRecoveryReentryStrategy,
-        PostBreakdownOversoldBounceStrategy,
-        DynamicSwingLowBreakoutRetestStrategy,
-        StateMachineHandoverEngine,
-    )
+    import state_machine_handover_engine as sm_engine
+
+BaseStrategy = getattr(sm_engine, "BaseStrategy", object)
+EntrySignal = getattr(sm_engine, "EntrySignal", None)
+ExitSignal = getattr(sm_engine, "ExitSignal", None)
+HandoverDecision = getattr(sm_engine, "HandoverDecision", None)
+Position = getattr(sm_engine, "Position", None)
+PositionSide = getattr(sm_engine, "PositionSide", None)
+MarketContext = getattr(sm_engine, "MarketContext", None)
+InitialDualMFILowerBandBounceStrategy = getattr(sm_engine, "InitialDualMFILowerBandBounceStrategy", None)
+PreviousHighBreakoutMomentumStrategy = getattr(sm_engine, "PreviousHighBreakoutMomentumStrategy", None)
+WickAbsorptionMultiTFConfluenceBreakoutStrategy = getattr(sm_engine, "WickAbsorptionMultiTFConfluenceBreakoutStrategy", PreviousHighBreakoutMomentumStrategy)
+DualMFI30mSecondaryReversalStrategy = getattr(sm_engine, "DualMFI30mSecondaryReversalStrategy", None)
+MFITrendReentryMBStrategy = getattr(sm_engine, "MFITrendReentryMBStrategy", None)
+PostSLRecoveryReentryStrategy = getattr(sm_engine, "PostSLRecoveryReentryStrategy", None)
+PostBreakdownOversoldBounceStrategy = getattr(sm_engine, "PostBreakdownOversoldBounceStrategy", None)
+DynamicSwingLowBreakoutRetestStrategy = getattr(sm_engine, "DynamicSwingLowBreakoutRetestStrategy", None)
+StateMachineHandoverEngine = getattr(sm_engine, "StateMachineHandoverEngine", None)
 
 
 def map_entry_type_to_strategy_name(entry_type_str: str) -> str:
