@@ -21,3 +21,31 @@
 2026-09-14 21:38:18,180 [INFO] Websocket connected
 2026-09-14 21:38:18,180 [INFO] 🟢 WebSocket Connection Opened successfully!
 2026-09-14 21:38:18,361 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-15 09:15:34,558 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-15 09:15:38,499 [INFO] 🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot 09:15...
+2026-09-15 09:15:46,596 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-15 09:15:46,596 [INFO] =========================================================================
+2026-09-15 09:15:46,596 [INFO] SENSEX CLOUD BOT - MASTER GRID INITIALIZED (Slot: 09:15 IST)
+2026-09-15 09:15:46,596 [INFO] Spot LTP: 75156.48 (Open: 75369.63) | VIX: 12.34% | DTE: 3.00 | Move: ±843.19
+2026-09-15 09:15:46,596 [INFO] CE Strike 75100 (ITM 1 | Exp: 2026-09-17): Price ₹407.50 | Delta 0.549 | Lower ₹334.60 | Upper ₹480.40 | SL ₹319.60 | Pr. ₹504.79
+2026-09-15 09:15:46,596 [INFO] CE Strike 75000 (ITM 2 | Exp: 2026-09-17): Price ₹480.30 | Delta 0.596 | Lower ₹361.07 | Upper ₹599.53 | SL ₹346.07 | Pr. ₹585.86
+2026-09-15 09:15:46,596 [INFO] CE Strike 74900 (ITM 3 | Exp: 2026-09-17): Price ₹598.85 | Delta 0.642 | Lower ₹384.19 | Upper ₹813.51 | SL ₹369.19 | Pr. ₹712.45
+2026-09-15 09:15:46,597 [INFO] PE Strike 75200 (ITM 1 | Exp: 2026-09-17): Price ₹360.00 | Delta 0.498 | Lower ₹313.27 | Upper ₹406.73 | SL ₹298.27 | Pr. ₹448.16
+2026-09-15 09:15:46,597 [INFO] PE Strike 75300 (ITM 2 | Exp: 2026-09-17): Price ₹414.00 | Delta 0.545 | Lower ₹339.91 | Upper ₹488.09 | SL ₹324.91 | Pr. ₹510.54
+2026-09-15 09:15:46,597 [INFO] PE Strike 75400 (ITM 3 | Exp: 2026-09-17): Price ₹448.75 | Delta 0.592 | Lower ₹346.18 | Upper ₹551.32 | SL ₹331.18 | Pr. ₹553.54
+2026-09-15 09:15:46,597 [INFO] =========================================================================
+2026-09-15 09:15:48,676 [WARNING] Could not convert TTS audio to Opus OGG with ffmpeg: [Errno 2] No such file or directory: 'ffmpeg'
+2026-09-15 09:15:50,979 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-15 09:15:51,444 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-15 09:15:51,911 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-15 09:15:51,924 [INFO] ⚡ Background WebSocket Feed initialized.
+2026-09-15 09:15:51,925 [INFO] 🔄 Entering continuous monitoring loop (Mode: PAPER, Refreshing 1s in-place)...
+2026-09-15 09:15:53,423 [INFO] Websocket connected
+2026-09-15 09:15:53,423 [INFO] 🟢 WebSocket Connection Opened successfully!
+2026-09-15 09:16:28,255 [ERROR] ❌ CLOUD BOT EXECUTION ERROR: name 'prev_p_low_15m' is not defined
+Traceback (most recent call last):
+  File "/home/runner/work/bhisma99/bhisma99/.github/workflows/sbd_bot_cloud.py", line 4486, in <module>
+    run_cloud_bot()
+  File "/home/runner/work/bhisma99/bhisma99/.github/workflows/sbd_bot_cloud.py", line 3229, in run_cloud_bot
+    is_lower_low_price_pe = (p_low_15m is not None and prev_p_low_15m is not None and p_low_15m < prev_p_low_15m) or (c_low_3m_pe is not None and prev_c_low_3m_pe is not None and c_low_3m_pe < prev_c_low_3m_pe) if ('prev_p_low_15m' in locals() or 'c_low_3m_pe' in locals()) else False
+NameError: name 'prev_p_low_15m' is not defined
