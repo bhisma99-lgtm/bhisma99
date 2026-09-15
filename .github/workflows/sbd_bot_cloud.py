@@ -1298,9 +1298,13 @@ def get_1h_mfi(smart_api: Any, exchange: str, symbol_token: str, period: int = 5
     return 50.0, 50.0
 
 
-def get_weekly_open_price(smart_api: Any) -> float:
-    """Fetch SENSEX Index Weekly Open price (Monday 09:15 AM Open)."""
+def get_weekly_open_price(smart_api: Any, index_name: str = "SENSEX") -> float:
+    """Fetch Index Weekly Open price (Monday 09:15 AM Open)."""
     try:
+        is_bn = "BANKNIFTY" in str(index_name).upper()
+        exchange = "NSE" if is_bn else "BSE"
+        symboltoken = "99926009" if is_bn else "99919000"
+        
         now_dt = datetime.now(IST)
         days_since_monday = now_dt.weekday()  # Monday = 0
         monday_dt = now_dt - timedelta(days=days_since_monday)
@@ -1308,8 +1312,8 @@ def get_weekly_open_price(smart_api: Any) -> float:
         to_str = now_dt.strftime("%Y-%m-%d %H:%M")
         
         params = {
-            "exchange": "BSE",
-            "symboltoken": "99919000",
+            "exchange": exchange,
+            "symboltoken": symboltoken,
             "interval": "FIFTEEN_MINUTE",
             "fromdate": from_str,
             "todate": to_str
@@ -1322,7 +1326,7 @@ def get_weekly_open_price(smart_api: Any) -> float:
                 return weekly_open
     except Exception as e:
         logger.debug("Error fetching Weekly Open: %s", e)
-    return 77000.0
+    return 51500.0 if "BANKNIFTY" in str(index_name).upper() else 77000.0
 
 
 def get_mfi_multi_period(smart_api: Any, exchange: str, symbol_token: str, timeframe: str = "FIFTEEN_MINUTE", periods: list[int] = [5, 14], return_extra: bool = False) -> Any:
@@ -2032,7 +2036,15 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
 
 
 def run_cloud_bot() -> None:
-    logger.info("🚀 Starting Standalone Cloud SENSEX Options Bot...")
+    # Determine target index (SENSEX or BANKNIFTY) from environment variable
+    target_index = os.getenv("INDEX_NAME", os.getenv("TARGET_INDEX", "SENSEX")).upper().strip()
+    is_bn_bot = "BANKNIFTY" in target_index
+    spot_exch = "NSE" if is_bn_bot else "BSE"
+    spot_sym = "BANKNIFTY" if is_bn_bot else "SENSEX"
+    spot_tok = "99926009" if is_bn_bot else "99919000"
+    active_lot_units = 30 if is_bn_bot else 20
+
+    logger.info("🚀 Starting Standalone Cloud %s Options Bot...", target_index)
     excel_tracker = ExcelTracker()
 
     smart_api = create_authenticated_smartapi_client()
@@ -2044,21 +2056,14 @@ def run_cloud_bot() -> None:
     grid = None
     ce_contract = None
     pe_contract = None
-    spot_price = 77500.0
-    spot_open = 77500.0
+    spot_price = 51500.0 if is_bn_bot else 77500.0
+    spot_open = spot_price
     vix_val = 13.5
     dte_days = 4.0
     ce_ltp = 500.0
     pe_ltp = 300.0
     grid_from_memory = False
     current_epm_buffer = 0.13
-
-    # Determine target index (SENSEX or BANKNIFTY) from environment variable
-    target_index = os.getenv("INDEX_NAME", os.getenv("TARGET_INDEX", "SENSEX")).upper().strip()
-    is_bn_bot = "BANKNIFTY" in target_index
-    spot_exch = "NSE" if is_bn_bot else "BSE"
-    spot_sym = "BANKNIFTY" if is_bn_bot else "SENSEX"
-    spot_tok = "99926009" if is_bn_bot else "99919000"
 
     # Get Spot Price
     try:
@@ -2091,8 +2096,9 @@ def run_cloud_bot() -> None:
                 ce_strike = float(ce_c_data.get("strike", 0))
                 pe_strike = float(pe_c_data.get("strike", 0))
 
-                # Validate recalled strikes: Must be valid SENSEX index strike range (> 50000)
-                if ce_strike < 50000 or pe_strike < 50000:
+                # Validate recalled strikes: Must be valid index strike range (> 20000 for BankNifty, > 50000 for Sensex)
+                min_strike = 20000 if is_bn_bot else 50000
+                if ce_strike < min_strike or pe_strike < min_strike:
                     raise ValueError(f"Recalled contract strike (CE: {ce_strike}, PE: {pe_strike}) is corrupted.")
 
                 # Validate recalled expiry: Must be active future expiry (not today/past unless official expiry day)
@@ -2262,7 +2268,7 @@ def run_cloud_bot() -> None:
 
     if grid_from_memory:
         logger.info("=========================================================================")
-        logger.info("SENSEX CLOUD BOT - RECALLED MASTER GRID FROM MEMORY")
+        logger.info("%s CLOUD BOT - RECALLED MASTER GRID FROM MEMORY", target_index)
         logger.info("Spot: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
         for idx, leg in enumerate(grid.ce_legs or [grid.ce_leg], 1):
             exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
@@ -2274,11 +2280,11 @@ def run_cloud_bot() -> None:
                         leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
         logger.info("=========================================================================")
         
-        flash_msg = format_grid_notification(grid, "🔄 *RECALLED MASTER GRID FROM MEMORY*", spot_price, spot_open, vix_val, dte_days, current_slot)
+        flash_msg = format_grid_notification(grid, f"🔄 *RECALLED {target_index} MASTER GRID FROM MEMORY*", spot_price, spot_open, vix_val, dte_days, current_slot)
         send_mobile_alert(flash_msg)
     else:
         logger.info("=========================================================================")
-        logger.info("SENSEX CLOUD BOT - MASTER GRID INITIALIZED (Slot: %s IST)", current_slot)
+        logger.info("%s CLOUD BOT - MASTER GRID INITIALIZED (Slot: %s IST)", target_index, current_slot)
         logger.info("Spot LTP: %.2f (Open: %.2f) | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, spot_open, vix_val, dte_days, grid.index_move)
         for idx, leg in enumerate(grid.ce_legs or [grid.ce_leg], 1):
             exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
@@ -2291,12 +2297,41 @@ def run_cloud_bot() -> None:
         logger.info("=========================================================================")
 
         # Send Notification
-        msg = format_grid_notification(grid, "🔔 *SENSEX MASTER GRID INITIALIZED*", spot_price, spot_open, vix_val, dte_days, current_slot)
+        msg = format_grid_notification(grid, f"🔔 *{target_index} MASTER GRID INITIALIZED*", spot_price, spot_open, vix_val, dte_days, current_slot)
         send_mobile_alert(msg)
+
+        # Also calculate & display supplementary BankNifty startup grid if main target is SENSEX (or SENSEX grid if main target is BANKNIFTY)
+        supp_index = "BANKNIFTY" if not is_bn_bot else "SENSEX"
+        supp_exch = "NSE" if not is_bn_bot else "BSE"
+        supp_sym = "BANKNIFTY" if not is_bn_bot else "SENSEX"
+        supp_tok = "99926009" if not is_bn_bot else "99919000"
+        try:
+            logger.info("📊 [STARTUP] Calculating supplementary %s EPM Master Grid details...", supp_index)
+            s_spot_res = smart_api.ltpData(supp_exch, supp_sym, supp_tok)
+            s_spot = float(s_spot_res["data"]["ltp"]) if isinstance(s_spot_res, dict) and s_spot_res.get("data") else (51500.0 if not is_bn_bot else 77500.0)
+            s_open = float(s_spot_res["data"]["open"]) if isinstance(s_spot_res, dict) and s_spot_res.get("data") and s_spot_res["data"].get("open") else s_spot
+            supp_grid, _, _ = build_epm_grid_and_contracts(smart_api, current_slot, s_spot, s_open, vix_val, buffer=current_epm_buffer, index_name=supp_index)
+            
+            logger.info("=========================================================================")
+            logger.info("%s EPM MASTER GRID INITIALIZED (Slot: %s IST)", supp_index, current_slot)
+            logger.info("Spot LTP: %.2f (Open: %.2f) | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", s_spot, s_open, vix_val, supp_grid.dte, supp_grid.index_move)
+            for idx, leg in enumerate(supp_grid.ce_legs or [supp_grid.ce_leg], 1):
+                exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
+                logger.info("CE Strike %d (ITM %d%s): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                            leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+            for idx, leg in enumerate(supp_grid.pe_legs or [supp_grid.pe_leg], 1):
+                exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
+                logger.info("PE Strike %d (ITM %d%s): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                            leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+            logger.info("=========================================================================")
+            supp_msg = format_grid_notification(supp_grid, f"🔔 *{supp_index} MASTER GRID INITIALIZED*", s_spot, s_open, vix_val, supp_grid.dte, current_slot)
+            send_mobile_alert(supp_msg)
+        except Exception as exc:
+            logger.warning("Could not fetch supplementary %s startup grid: %s", supp_index, exc)
 
         # Send Commands Cheat Sheet / Tips at 9:15 AM (Safe Markdown formatting)
         cheat_sheet_msg = (
-            "📱 *SENSEX BOT COMMANDS CHEAT SHEET*\n\n"
+            f"📱 *{target_index} BOT COMMANDS CHEAT SHEET*\n\n"
             "Use these keywords to manage your bot and active trades on the go:\n\n"
             "1. *Add Lots:* `ADD LOTS`\n"
             "   Example: `ADD 2` (Adds 2 more lots at Market price)\n\n"
@@ -2346,7 +2381,7 @@ def run_cloud_bot() -> None:
             api_key=os.environ["ANGEL_ONE_API_KEY"],
             auth_token=smart_api.auth_token
         )
-        tokens_to_sub = ["99919000"] + [c.symbol_token for c in (ce_contracts if 'ce_contracts' in locals() else [ce_contract])] + [c.symbol_token for c in (pe_contracts if 'pe_contracts' in locals() else [pe_contract])]
+        tokens_to_sub = [spot_tok] + [c.symbol_token for c in (ce_contracts if 'ce_contracts' in locals() else [ce_contract])] + [c.symbol_token for c in (pe_contracts if 'pe_contracts' in locals() else [pe_contract])]
         ws_feed.start(tokens_to_sub)
         logger.info("⚡ Background WebSocket Feed initialized.")
     except Exception as e:
@@ -2452,8 +2487,8 @@ def run_cloud_bot() -> None:
 
                     # 1. Fetch current Spot & VIX again for the new grid
                     try:
-                        spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
-                        spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else 77500.0
+                        spot_res = smart_api.ltpData(spot_exch, spot_sym, spot_tok)
+                        spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else (51500.0 if is_bn_bot else 77500.0)
                         spot_open = float(spot_res["data"]["open"]) if isinstance(spot_res, dict) and spot_res.get("data") and spot_res["data"].get("open") else spot_price
                     except Exception:
                         pass
@@ -2465,8 +2500,8 @@ def run_cloud_bot() -> None:
                         pass
 
                     # 2. Re-calculate new Master Grid & Contracts for the new slot
-                    logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for transitioned slot %s...", current_slot)
-                    grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer)
+                    logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for transitioned slot %s (%s)...", current_slot, target_index)
+                    grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer, index_name=target_index)
                     ce_contract = ce_contracts[0]
                     pe_contract = pe_contracts[0]
                     ce_ltp = grid.ce_leg.ltp
@@ -2481,7 +2516,7 @@ def run_cloud_bot() -> None:
 
                     # Send Telegram Notification for new slot's EPM (make sure current_slot is explicitly passed)
                     logger.info("=========================================================================")
-                    logger.info("SENSEX CLOUD BOT - MASTER GRID TRANSITIONED")
+                    logger.info("%s CLOUD BOT - MASTER GRID TRANSITIONED", target_index)
                     logger.info("Spot LTP: %.2f | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", spot_price, vix_val, dte_days, grid.index_move)
                     for idx, leg in enumerate(grid.ce_legs or [grid.ce_leg], 1):
                         exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
@@ -2493,7 +2528,7 @@ def run_cloud_bot() -> None:
                                     leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
                     logger.info("=========================================================================")
 
-                    msg = format_grid_notification(grid, f"🔔 *SENSEX MASTER GRID UPDATED ({current_slot} Slot)*", spot_price, spot_open, vix_val, dte_days, current_slot)
+                    msg = format_grid_notification(grid, f"🔔 *{target_index} MASTER GRID UPDATED ({current_slot} Slot)*", spot_price, spot_open, vix_val, dte_days, current_slot)
                     send_mobile_alert(msg)
 
                     # Log to Excel
@@ -2534,7 +2569,7 @@ def run_cloud_bot() -> None:
                                 api_key=os.environ["ANGEL_ONE_API_KEY"],
                                 auth_token=smart_api.auth_token
                             )
-                            tokens_to_subscribe = ["99919000", ce_contract.symbol_token, pe_contract.symbol_token]
+                            tokens_to_subscribe = [spot_tok, ce_contract.symbol_token, pe_contract.symbol_token]
                             if bot_state != "IDLE" and active_contract:
                                 tokens_to_subscribe.append(active_contract.symbol_token)
                             ws_feed.start(tokens_to_subscribe)
@@ -2573,7 +2608,7 @@ def run_cloud_bot() -> None:
                         current_epm_buffer = remote_lots
                         logger.info("⚙️ [TELEGRAM] EPM Master Grid Buffer updated to %.2f. Recalculating EPM Grid...", current_epm_buffer)
                         
-                        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer)
+                        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer, index_name=target_index)
                         ce_contract = ce_contracts[0]
                         pe_contract = pe_contracts[0]
                         ce_ltp = grid.ce_leg.ltp
@@ -2581,7 +2616,7 @@ def run_cloud_bot() -> None:
                         dte_days = grid.dte
                         
                         save_bot_memory(trades_completed, current_slot, grid, ce_contract, pe_contract)
-                        msg = format_grid_notification(grid, f"🔔 *SENSEX MASTER GRID UPDATED (Buffer: {current_epm_buffer:.2f})*", spot_price, spot_open, vix_val, dte_days, current_slot)
+                        msg = format_grid_notification(grid, f"🔔 *{target_index} MASTER GRID UPDATED (Buffer: {current_epm_buffer:.2f})*", spot_price, spot_open, vix_val, dte_days, current_slot)
                         send_mobile_alert(msg)
                     else:
                         trail_buffer = remote_lots
@@ -2705,10 +2740,10 @@ def run_cloud_bot() -> None:
                 # Fetch Live Spot & LTPs (WebSocket with HTTP fallback)
                 live_spot = None
                 if ws_feed and ws_feed.is_connected:
-                    live_spot = ws_feed.prices.get("99919000")
+                    live_spot = ws_feed.prices.get(spot_tok)
                 if live_spot is None:
                     try:
-                        live_spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
+                        live_spot_res = smart_api.ltpData(spot_exch, spot_sym, spot_tok)
                         live_spot = float(live_spot_res["data"]["ltp"]) if isinstance(live_spot_res, dict) and live_spot_res.get("data") else None
                     except Exception:
                         live_spot = None
@@ -3121,7 +3156,7 @@ def run_cloud_bot() -> None:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
-                                        scaled_sl_pts_ce = calculate_index_scaled_sl("SENSEX", base_sl_sensex=18.0, spot_price=live_spot, sensex_spot=81500.0, delta=abs(ce_contract.delta if ce_contract else 0.60), lot_size=base_lot_size * 20)
+                                        scaled_sl_pts_ce = calculate_index_scaled_sl(target_index, base_sl_sensex=18.0, spot_price=live_spot, sensex_spot=81500.0, delta=abs(ce_contract.delta if ce_contract else 0.60), lot_size=base_lot_size * active_lot_units)
                                         active_sl_ce = live_ce_ltp - scaled_sl_pts_ce
                                         entry_type_str_ce = f"CE Dynamic EPM Low Bounce LONG Entry (Score: {conf_score_ce}/100, Wick: {wick_pct_15m_ce:.1f}%, EPM Low: ₹{ce_epm_low_saved:.2f} | SL-{scaled_sl_pts_ce:.1f})"
                                     elif is_recovery_reentry_ce:
@@ -3461,7 +3496,7 @@ def run_cloud_bot() -> None:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
                                         lot_size = base_lot_size
-                                        scaled_sl_pts_pe = calculate_index_scaled_sl("SENSEX", base_sl_sensex=18.0, spot_price=live_spot, sensex_spot=81500.0, delta=abs(pe_contract.delta if pe_contract else 0.60), lot_size=base_lot_size * 20)
+                                        scaled_sl_pts_pe = calculate_index_scaled_sl(target_index, base_sl_sensex=18.0, spot_price=live_spot, sensex_spot=81500.0, delta=abs(pe_contract.delta if pe_contract else 0.60), lot_size=base_lot_size * active_lot_units)
                                         active_sl_pe = live_pe_ltp - scaled_sl_pts_pe
                                         entry_type_str_pe = f"PE Dynamic EPM Low Bounce LONG Entry (Score: {conf_score_pe}/100, Wick: {wick_pct_15m_pe:.1f}%, EPM Low: ₹{pe_epm_low_saved:.2f} | SL-{scaled_sl_pts_pe:.1f})"
                                     elif is_recovery_reentry_pe:
@@ -4385,9 +4420,9 @@ def run_cloud_bot() -> None:
                     now_time_str_exit_pe = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live_pe = (now_time_str_exit_pe >= "15:25")
 
-                    # Exit rest lots if scaled out and approaching/reaching 15m Overbought Zone (MFI14 >= 70.0 or MFI5 > 95.0) while BOTH 15m MFIs are falling
+                    # Exit rest lots if scaled out and approaching/reaching 15m Overbought Zone (>= 70) while BOTH 15m MFIs are falling
                     is_rest_lots_overbought_mfi_fall_pe = offloaded and (
-                        (curr_mfi14_pe >= 70.0 or prev_mfi14_pe >= 70.0 or curr_mfi5_pe > 95.0 or prev_mfi5_pe > 95.0)
+                        (curr_mfi5_pe >= 70.0 or curr_mfi14_pe >= 70.0 or prev_mfi5_pe >= 70.0 or prev_mfi14_pe >= 70.0)
                         and (curr_mfi5_pe < prev_mfi5_pe and curr_mfi14_pe < prev_mfi14_pe)
                     )
 
@@ -4615,4 +4650,3 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.error("❌ CLOUD BOT EXECUTION ERROR: %s", exc, exc_info=True)
         sys.exit(1)
-c
