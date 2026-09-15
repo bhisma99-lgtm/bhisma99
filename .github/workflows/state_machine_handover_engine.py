@@ -94,6 +94,10 @@ class Position:
     lot_size: int
     handover_history: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    ub_reached: bool = False
+    mfi14_overbought_reached: bool = False
+    last_swing_high_price: float = 0.0
+    last_swing_high_mfi14: float = 0.0
 
 
 @dataclass
@@ -131,6 +135,7 @@ class MarketContext:
     allow_reentry: bool
     recovery_eligible: bool
     initial_entry_done: bool
+    prev_open: float = 0.0
     mfi5_3m: float = 50.0
     mfi14_3m: float = 50.0
     prev_mfi5_3m: float = 50.0
@@ -140,6 +145,10 @@ class MarketContext:
     mb_3m: float = 0.0
     ub_3m: float = 0.0
     lb_3m: float = 0.0
+    prev_mb_20: float = 0.0
+    prev_prev_mb_20: float = 0.0
+    prev_mb_3m: float = 0.0
+    prev_prev_mb_3m: float = 0.0
 
 
 # =====================================================================
@@ -256,69 +265,147 @@ class InitialDualMFILowerBandBounceStrategy(BaseStrategy):
         return ExitSignal(False, ctx.close, "")
 
 
-class PreviousHighBreakoutMomentumStrategy(BaseStrategy):
-    """Strategy 2: Breakout Momentum with Pullback Retest & Sub-MB Bounce."""
+class WickAbsorptionMultiTFConfluenceBreakoutStrategy(BaseStrategy):
+    """Strategy 2: Wick Absorption, Bullish MFI Divergence & BB Squeeze Breakout Strategy."""
     
     def __init__(self):
-        super().__init__("Previous High Breakout Momentum Entry", base_win_rate=0.72, base_rr=2.8)
+        super().__init__("Wick Absorption & Multi-TF Confluence Breakout Entry", base_win_rate=0.72, base_rr=2.8)
 
     def evaluate_entry(self, ctx: MarketContext) -> Optional[EntrySignal]:
         if ctx.is_0915_bar:
             return None  # Suppress millisecond opening spike
 
-        is_both_15m_rising = (ctx.mfi5_15m > ctx.prev_mfi5_15m) and (ctx.mfi14_15m >= ctx.prev_mfi14_15m)
-        is_30m_both_favorable = (ctx.mfi5_30m >= ctx.prev_mfi5_30m) and (ctx.mfi14_30m >= ctx.prev_mfi14_30m + 0.5)
-        is_price_breakout = (ctx.high > ctx.prev_high)
-        is_below_mb = (ctx.open < ctx.mb_20)
+        # Check 15m Middle Band slope restriction (#1)
+        mb_15m_curr = ctx.mb_20
+        mb_15m_prev = getattr(ctx, "prev_mb_20", mb_15m_curr)
+        mb_15m_prev2 = getattr(ctx, "prev_prev_mb_20", mb_15m_prev)
+        is_15m_mb_falling_steep = (mb_15m_prev - mb_15m_curr > 1.0) or (mb_15m_prev2 - mb_15m_prev > 1.0)
+        is_15m_mb_ok = not is_15m_mb_falling_steep  # Running straight (within 1pt) or increasing
+
+        # Check 3m Middle Band & 15m Middle Band settled for Entry #2
+        mb_3m_curr = ctx.mb_3m if ctx.mb_3m > 0 else ctx.mb_20
+        mb_3m_prev = getattr(ctx, "prev_mb_3m", mb_3m_curr)
+        is_3m_mb_settled = (mb_3m_curr - mb_3m_prev >= -1.0)
+        is_15m_mb_settled = (mb_15m_curr - mb_15m_prev >= -1.0)
+
+        # Lower Wick Absorption Calculation
+        total_range = (ctx.high - ctx.low) if ctx.high > ctx.low else 1.0
+        lower_wick = max(0.0, min(ctx.open, ctx.close) - ctx.low)
+        wick_pct = (lower_wick / total_range) * 100.0
         
-        if is_below_mb:
-            valid_entry = is_both_15m_rising and (ctx.close >= ctx.open) and is_price_breakout and is_30m_both_favorable
-        else:
-            valid_entry = is_both_15m_rising and is_price_breakout and is_30m_both_favorable
-            
-        if valid_entry:
-            prev_candle_range = (ctx.prev_high - ctx.prev_low) if ctx.prev_high > ctx.prev_low else 30.0
-            dynamic_pullback = max(6.0, min(18.0, 0.30 * prev_candle_range))
-            retest_zone_high = ctx.prev_high
-            retest_zone_low = ctx.prev_high - dynamic_pullback
-            if ctx.low <= retest_zone_high:
-                entry_p = max(retest_zone_low, ctx.low)
-            else:
-                entry_p = ctx.prev_high + 1.0
-                
-            entry_both_15m_mfi_rising = (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m > ctx.prev_mfi14_15m)
-            sl = ctx.low - 15.0 if entry_both_15m_mfi_rising else entry_p - 20.0
-            target = entry_p + 40.0
-            return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Breakout Momentum with 15m & 30m Dual MFI rising")
+        # Confluence Score
+        conf_score = getattr(ctx, "confluence_score", 65)
+
+        # Breakout Condition #1: Lower BB Wick Absorption + Confluence Score (3m >= 55, 15m/Dual 60-70)
+        is_near_lb = (ctx.close <= ctx.lb_20 + 5.0 or ctx.low <= ctx.lb_20 + 5.0)
+        is_mfi_htf_ok = (ctx.mfi14_15m >= ctx.prev_mfi14_15m) or (ctx.mfi14_30m >= ctx.prev_mfi14_30m)
+        is_breakout1 = is_near_lb and is_mfi_htf_ok and ((wick_pct >= 35.0 and conf_score >= 55) or (wick_pct >= 35.0 and 60 <= conf_score <= 70))
+
+        # Breakout Condition #2: Bullish MFI Divergence
+        is_lower_low_p = (ctx.low < ctx.prev_low) if hasattr(ctx, "prev_low") and ctx.prev_low else False
+        is_higher_low_mfi = (ctx.mfi5_15m > ctx.prev_mfi5_15m or ctx.mfi14_15m > ctx.prev_mfi14_15m)
+        is_breakout2 = is_lower_low_p and is_higher_low_mfi and (ctx.close >= ctx.open)
+
+        # Breakout Condition #3: BB Squeeze Breakout
+        bb_bw = ((ctx.ub_20 - ctx.lb_20) / ctx.mb_20) if ctx.mb_20 > 0 else 1.0
+        is_squeeze = (bb_bw <= 0.15)
+        is_squeeze_imm = is_squeeze and (ctx.close <= ctx.mb_20 + 2.0) and (ctx.mfi5_15m > ctx.prev_mfi5_15m)
+        is_squeeze_pb = is_squeeze and (ctx.close <= ctx.mb_20 + 2.0 and ctx.close >= ctx.open) and (ctx.mfi14_15m <= 25.0 or ctx.mfi14_15m > ctx.prev_mfi14_15m)
+        is_breakout3 = is_squeeze_imm or is_squeeze_pb
+
+        valid_breakout_entry = is_15m_mb_ok and (is_breakout1 or is_breakout2 or is_breakout3)
+
+        # Requirement #3 Entry Restriction for Wick Absorption & Confluence Breakout:
+        both_3m_mfi_falling_check = (ctx.mfi5_3m < ctx.prev_mfi5_3m and ctx.mfi14_3m < ctx.prev_mfi14_3m)
+        is_15m_mfi14_falling_check = (ctx.mfi14_15m < ctx.prev_mfi14_15m)
+        mfi14_inc_less_than_1 = (ctx.mfi14_15m - ctx.prev_mfi14_15m < 1.0)
+        is_last_candle_red = (ctx.prev_close < getattr(ctx, "prev_open", ctx.prev_close)) and (ctx.prev_low < getattr(ctx, "prev_low", ctx.prev_low))
+        is_weak_mfi_red_breakdown = mfi14_inc_less_than_1 and is_last_candle_red
+
+        if both_3m_mfi_falling_check or is_15m_mfi14_falling_check or is_weak_mfi_red_breakdown:
+            valid_breakout_entry = False
+
+        # ENTRY #2: 3m & 15m Middle Band settled + Near 3m lower band + Both 3m MFI rising
+        lb_3m_level = ctx.lb_3m if ctx.lb_3m > 0 else ctx.lb_20
+        is_near_3m_lb = (ctx.low <= lb_3m_level + 5.0 or ctx.close <= lb_3m_level + 5.0)
+        both_3m_mfi_rising = (ctx.mfi5_3m > ctx.prev_mfi5_3m) and (ctx.mfi14_3m > ctx.prev_mfi14_3m)
+        valid_settled_entry = is_3m_mb_settled and is_15m_mb_settled and is_near_3m_lb and both_3m_mfi_rising
+
+        if (valid_breakout_entry or valid_settled_entry) and both_3m_mfi_rising:
+            entry_p = ctx.close
+            sl = max(ctx.low - 15.0, entry_p - 20.0)
+            target = entry_p + 60.0
+            reason_tag = "Settled MB 3m Lower BB Entry (#2)" if valid_settled_entry else f"Breakout Entry 15m/3m Aligned (#1 Wick: {wick_pct:.1f}%, Score: {conf_score})"
+            return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason=reason_tag)
         return None
 
     def evaluate_exit(self, ctx: MarketContext, position: Position) -> ExitSignal:
-        is_30m_htf_trend_rising = (ctx.mfi5_30m >= ctx.prev_mfi5_30m and ctx.mfi14_30m >= ctx.prev_mfi14_30m)
-        is_price_and_mfi5_rising = (ctx.close > position.entry_price and ctx.mfi5_15m > ctx.prev_mfi5_15m)
-        is_htf_hold_trend = is_30m_htf_trend_rising or is_price_and_mfi5_rising
+        mb_15m_curr = ctx.mb_20
+        mb_15m_prev = getattr(ctx, "prev_mb_20", mb_15m_curr)
+        mb_15m_prev2 = getattr(ctx, "prev_prev_mb_20", mb_15m_prev)
 
-        # 1. Overbought / Upper BB Rejection Exit
-        if (ctx.mfi14_15m >= 70.0 or ctx.mfi5_15m >= 80.0) and (ctx.high >= ctx.prev_high or position.peak_price >= ctx.prev_high) and (ctx.close < ctx.prev_high or ctx.close <= ctx.open or ctx.high - ctx.close >= 5.0):
-            return ExitSignal(True, ctx.close, "Overbought High Rejection Exit")
+        points_gained = ctx.close - position.entry_price
 
-        # 2. Upper BB reached + dual MFI falling
-        if (ctx.high >= ctx.ub_20 or position.peak_price >= ctx.ub_20) and (ctx.mfi5_15m < ctx.prev_mfi5_15m and ctx.mfi14_15m < ctx.prev_mfi14_15m):
-            return ExitSignal(True, ctx.close, "Upper BB Reached & Dual MFI Fall Exit")
+        # Check exit triggers
+        trigger_exit = False
+        exit_reason = ""
 
-        # 3. MFI(14) or both MFI falling (override if HTF riding)
-        if (ctx.mfi14_15m < ctx.prev_mfi14_15m or (ctx.mfi5_15m < ctx.prev_mfi5_15m and ctx.mfi14_15m < ctx.prev_mfi14_15m)) and not is_htf_hold_trend:
-            return ExitSignal(True, ctx.close, "Breakout MFI(14) / Both MFI Fall Exit")
-            
-        # 4. Weak closing retrace to open (exempt if MFI 14 still rising)
-        if position.peak_price >= position.entry_price + 5.0 and (ctx.close <= ctx.open or ctx.high - ctx.close >= 6.0):
-            if not (ctx.mfi14_15m > ctx.prev_mfi14_15m):
-                return ExitSignal(True, ctx.close, "Breakout Weak Close / Retrace to Open Exit")
-                
-        # 5. MB Rejection
-        if position.peak_price >= ctx.mb_20 - 5.0 and (ctx.mfi14_15m < ctx.prev_mfi14_15m or ctx.mfi5_15m >= 80.0) and ctx.close <= position.peak_price - 3.0:
-            return ExitSignal(True, ctx.close, "Breakout Middle Band Rejection Exit")
-            
+        # #1 SHORT HOLD EXIT: 15min MB falling > 1 continuously and not running straight or increasing
+        is_15m_mb_falling_steep = (mb_15m_prev - mb_15m_curr > 1.0) and (mb_15m_prev2 - mb_15m_prev > 1.0 or mb_15m_prev - mb_15m_curr > 1.0)
+        if is_15m_mb_falling_steep:
+            mfi_3m_ob = (ctx.mfi5_3m >= 70.0 or ctx.mfi14_3m >= 70.0)
+            mfi14_3m_falling = (ctx.mfi14_3m < ctx.prev_mfi14_3m)
+            price_falling_to_open = (ctx.close < ctx.open or ctx.close <= ctx.high - 2.0)
+            both_3m_mfi_falling = (ctx.mfi5_3m < ctx.prev_mfi5_3m and ctx.mfi14_3m < ctx.prev_mfi14_3m)
+
+            if (mfi_3m_ob and mfi14_3m_falling and price_falling_to_open) or both_3m_mfi_falling:
+                trigger_exit = True
+                exit_reason = "Profit Booking Exit (100+ pts or MB Fall)"
+
+        # #2 LONG HOLD EXIT: If holding long trade, hold while 15m MB is rising UNLESS 15m MFI(14) divergence occurs
+        is_mfi14_divergence = (ctx.high > getattr(position, "peak_price", ctx.high) - 2.0 or ctx.high > ctx.prev_high) and (ctx.mfi14_15m < ctx.prev_mfi14_15m)
+        is_15m_mb_rising = (mb_15m_curr > mb_15m_prev)
+        is_15m_mb_falling = (mb_15m_curr < mb_15m_prev)
+        both_mfi_or_mfi14_falling_15m = (ctx.mfi14_15m < ctx.prev_mfi14_15m) or (ctx.mfi5_15m < ctx.prev_mfi5_15m and ctx.mfi14_15m < ctx.prev_mfi14_15m)
+
+        # Requirement #2 Quick Exit: both MFI / MFI(14) falling AND 15m Middle Band falling
+        if both_mfi_or_mfi14_falling_15m and is_15m_mb_falling:
+            trigger_exit = True
+            exit_reason = "Swing High Retest Price Rejection Exit"
+
+        if not is_15m_mb_rising or is_mfi14_divergence:
+            if not trigger_exit and (is_mfi14_divergence or (ctx.close <= position.peak_price - 4.0 and ctx.close < ctx.open)):
+                trigger_exit = True
+                exit_reason = "Swing High Retest Price Rejection Exit"
+
+        # Standard 100+ points profit booking exit fallback
+        if points_gained >= 100.0:
+            trigger_exit = True
+            exit_reason = "Profit Booking Exit (100+ pts or MB Fall)"
+
+        # #3 HOLD OVERRIDE LOGIC:
+        # If exit triggered BUT both 15m MFI rising from oversold zone OR 15m MB is rising:
+        # HOLD UNTIL any 15m MFI reaches oversold zone and both 3m MFI falling
+        both_15m_mfi_rising_oversold = (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m > ctx.prev_mfi14_15m) and (ctx.prev_mfi14_15m <= 35.0 or ctx.prev_mfi5_15m <= 30.0)
+        is_hold_override_active = (both_15m_mfi_rising_oversold or is_15m_mb_rising)
+
+        if trigger_exit and is_hold_override_active:
+            # Check if hold-until termination condition reached: any 15m MFI in oversold AND both 3m MFI falling
+            any_15m_mfi_oversold = (ctx.mfi5_15m <= 25.0 or ctx.mfi14_15m <= 30.0)
+            both_3m_mfi_falling = (ctx.mfi5_3m < ctx.prev_mfi5_3m and ctx.mfi14_3m < ctx.prev_mfi14_3m)
+
+            if not (any_15m_mfi_oversold and both_3m_mfi_falling):
+                # Suppress exit and continue holding
+                return ExitSignal(False, ctx.close, "")
+
+        if trigger_exit:
+            return ExitSignal(True, ctx.close, exit_reason)
+
         return ExitSignal(False, ctx.close, "")
+
+
+# Backward compatibility alias
+PreviousHighBreakoutMomentumStrategy = WickAbsorptionMultiTFConfluenceBreakoutStrategy
 
 
 class DualMFI30mSecondaryReversalStrategy(BaseStrategy):
@@ -385,10 +472,25 @@ class PostSLRecoveryReentryStrategy(BaseStrategy):
     def evaluate_entry(self, ctx: MarketContext) -> Optional[EntrySignal]:
         if not ctx.recovery_eligible:
             return None
-        is_dual_rising = (ctx.mfi5_15m > ctx.prev_mfi5_15m) and (ctx.mfi14_15m > ctx.prev_mfi14_15m)
-        is_30m_ok = (ctx.mfi5_30m >= ctx.prev_mfi5_30m) and (ctx.mfi14_30m >= ctx.prev_mfi14_30m + 0.5)
-        
-        if (ctx.close >= ctx.open) and is_dual_rising and (ctx.close < ctx.mb_20) and is_30m_ok:
+
+        # Restriction #1: Blocked when 15m MFI(5) is falling from >= 90.0
+        is_15m_mfi5_falling_from_90 = (ctx.prev_mfi5_15m >= 90.0 and ctx.mfi5_15m < ctx.prev_mfi5_15m)
+        if is_15m_mfi5_falling_from_90:
+            return None
+
+        # Entry Condition #1: Wait for both 15m MFIs to rise near lower BB with 3m MFI confirmation
+        is_both_15m_rising = (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m > ctx.prev_mfi14_15m)
+        is_near_lower_band = (ctx.low <= ctx.lb_20 + 20.0 or ctx.close < ctx.mb_20)
+        is_3m_mfi_confirmation = (ctx.mfi5_3m > ctx.prev_mfi5_3m and ctx.mfi14_3m >= ctx.prev_mfi14_3m)
+        cond1 = (ctx.close >= ctx.open) and is_both_15m_rising and is_near_lower_band and is_3m_mfi_confirmation
+
+        # Entry Condition #2: Price drops sharply from open to or bounce near 15m Lower BB with mid BB rising in 15min OR both 30m MFIs rising
+        is_near_or_below_lower_bb = (ctx.low <= ctx.lb_20 + 5.0)
+        is_15m_mb_increasing = (ctx.mb_20 > ctx.prev_mb_20)
+        is_both_30m_mfi_rising = (ctx.mfi5_30m > ctx.prev_mfi5_30m and ctx.mfi14_30m > ctx.prev_mfi14_30m)
+        cond2 = (ctx.close >= ctx.open) and is_near_or_below_lower_bb and (is_15m_mb_increasing or is_both_30m_mfi_rising)
+
+        if cond1 or cond2:
             sl = ctx.close - 20.0
             target = ctx.close + 40.0
             return EntrySignal(self.name, PositionSide.LONG, ctx.close, sl, target, lot_size=2, reason="Post-SL Recovery Bounce")
@@ -431,93 +533,37 @@ class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
         self.waiting_for_bb_pullback: bool = False
         self.lower_bb_touched: bool = False
         self.current_day: str = ""
+        self.recent_same_side_exit: bool = False
+        self.mfi5_zero_reached: bool = False
 
     def _reset_day_state(self, current_day: str):
         if self.current_day != current_day:
             self.current_day = current_day
             self.waiting_for_bb_pullback = False
             self.lower_bb_touched = False
+            self.recent_same_side_exit = False
+            self.mfi5_zero_reached = False
 
     def evaluate_entry(self, ctx: MarketContext) -> Optional[EntrySignal]:
         c_day = ctx.timestamp[:10] if len(ctx.timestamp) >= 10 else ""
         self._reset_day_state(c_day)
 
-        is_mfi_falling_from_ob = (ctx.prev_mfi5_15m >= 80.0 or ctx.prev_mfi14_15m >= 70.0) and (ctx.mfi5_15m < ctx.prev_mfi5_15m or ctx.mfi14_15m < ctx.prev_mfi14_15m)
-        is_ob_blocked = (ctx.mfi5_15m >= 80.0 or ctx.mfi14_15m >= 68.0) or (ctx.ub_20 > 0 and ctx.high >= ctx.ub_20 - 8.0) or is_mfi_falling_from_ob
-        if is_ob_blocked:
-            self.waiting_for_bb_pullback = False
-            self.lower_bb_touched = False
-            return None
-
-        swing_low_bounce_zone = max(25.0, ctx.dynamic_tolerance * 2.5)
+        # Condition A: 15min both MFI must be increasing
+        is_15m_both_mfi_increasing = (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m > ctx.prev_mfi14_15m)
         
-        # Middle Band Proximity & Correction at or below MB:
-        mb_level = ctx.mb_3m if ctx.mb_3m > 0 else ctx.mb_20
-        is_corrected_to_mb = (mb_level > 0) and (ctx.low <= mb_level + 1.0)
-        is_bounce_to_open = (ctx.close >= ctx.open)
-        is_mb_setup = is_corrected_to_mb and is_bounce_to_open
+        # Condition B: 3min both MFI correct near Oversold zone (<= 35) and bounce
+        is_3m_mfi_oversold = (ctx.mfi5_3m <= 35.0 or ctx.prev_mfi5_3m <= 35.0 or ctx.mfi14_3m <= 35.0 or ctx.prev_mfi14_3m <= 35.0)
+        is_3m_both_mfi_bouncing = (ctx.mfi5_3m > ctx.prev_mfi5_3m and ctx.mfi14_3m > ctx.prev_mfi14_3m)
+        
+        # Condition C: Higher low relative to pivot and 15m mid BB rising
+        is_higher_low = (ctx.low >= ctx.recent_swing_low - 1.0)
+        is_15m_mb_rising = (ctx.mb_20 > ctx.prev_mb_20)
 
-        is_near_swing_low = (ctx.low <= ctx.recent_swing_low + swing_low_bounce_zone) or (ctx.open <= ctx.recent_swing_low + swing_low_bounce_zone)
-        is_candidate_setup = (is_mb_setup or is_near_swing_low) and is_bounce_to_open
-
-        # 3min MFI indicators
-        curr_mfi5_3m = ctx.mfi5_3m if ctx.mfi5_3m > 0 else ctx.mfi5_15m
-        prev_mfi5_3m = ctx.prev_mfi5_3m if ctx.prev_mfi5_3m > 0 else ctx.prev_mfi5_15m
-        prev_prev_mfi5_3m = ctx.prev_prev_mfi5_3m if ctx.prev_prev_mfi5_3m > 0 else prev_mfi5_3m
-        curr_mfi14_3m = ctx.mfi14_3m if ctx.mfi14_3m > 0 else ctx.mfi14_15m
-        prev_mfi14_3m = ctx.prev_mfi14_3m if ctx.prev_mfi14_3m > 0 else ctx.prev_mfi14_15m
-        prev_prev_mfi14_3m = ctx.prev_prev_mfi14_3m if ctx.prev_prev_mfi14_3m > 0 else prev_mfi14_3m
-
-        # Rule: During entry time or in previous candle if 3min both MFI falling
-        curr_3m_both_falling = (curr_mfi5_3m < prev_mfi5_3m) and (curr_mfi14_3m < prev_mfi14_3m)
-        prev_3m_both_falling = (prev_mfi5_3m < prev_prev_mfi5_3m) and (prev_mfi14_3m < prev_prev_mfi14_3m)
-        is_3m_both_falling = curr_3m_both_falling or prev_3m_both_falling
-
-        # Required Reversal Criteria: Price touches lower BB, both 3m MFI rise, HTF MFI rise
-        lb_target = ctx.lb_3m if ctx.lb_3m > 0 else ctx.lb_20
-        if lb_target > 0 and ctx.low <= lb_target + 2.0:
-            self.lower_bb_touched = True
-
-        # 3m MFI Rising check: Both MFI increasing OR at least MFI(14) increasing
-        is_3m_mfi_rising = ((curr_mfi5_3m > prev_mfi5_3m) and (curr_mfi14_3m >= prev_mfi14_3m)) or (curr_mfi14_3m > prev_mfi14_3m)
-        is_15m_mfi_rising = (ctx.mfi14_15m > ctx.prev_mfi14_15m) or (ctx.mfi14_15m >= ctx.prev_mfi14_15m and ctx.mfi5_15m > ctx.prev_mfi5_15m)
-        is_30m_mfi_rising = (ctx.mfi14_30m > ctx.prev_mfi14_30m) or (ctx.mfi14_30m >= ctx.prev_mfi14_30m and ctx.mfi5_30m > ctx.prev_mfi5_30m)
-        is_htf_mfi_rising = is_15m_mfi_rising or is_30m_mfi_rising
-
-        # Handle 3min falling wait state: wait for price to touch lower BB and 3m MFI to rise and HTF MFI rise
-        if self.waiting_for_bb_pullback:
-            if self.lower_bb_touched and is_3m_mfi_rising and is_htf_mfi_rising and is_bounce_to_open:
-                self.waiting_for_bb_pullback = False
-                self.lower_bb_touched = False
-                retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
-                entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
-                sl = max(ctx.low - 5.0, entry_p - 20.0)
-                target = entry_p + 35.0
-                return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Dynamic Swing Low / Lower BB Touch & 3m+HTF MFI Reversal")
-            return None
-
-        if is_candidate_setup:
-            if is_3m_both_falling:
-                # 3m both MFI falling at entry time or prev candle -> activate wait for lower BB touch + 3m & HTF MFI rise
-                self.waiting_for_bb_pullback = True
-                if self.lower_bb_touched and is_3m_mfi_rising and is_htf_mfi_rising and is_bounce_to_open:
-                    self.waiting_for_bb_pullback = False
-                    self.lower_bb_touched = False
-                    retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
-                    entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
-                    sl = max(ctx.low - 5.0, entry_p - 20.0)
-                    target = entry_p + 35.0
-                    return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Dynamic Swing Low / Lower BB Touch & 3m+HTF MFI Reversal")
-                return None
-            else:
-                # Can enter from middle band only if price corrected at/below MB, bounced to Open, both 3m MFI (or MFI14) rising AND any HTF MFI rising
-                if is_3m_mfi_rising and is_htf_mfi_rising and is_bounce_to_open:
-                    retest_trigger = ctx.recent_swing_low + swing_low_bounce_zone
-                    entry_p = ctx.open if ctx.open <= retest_trigger else min(ctx.open, retest_trigger)
-                    sl = max(ctx.low - 5.0, entry_p - 20.0)
-                    target = entry_p + 35.0
-                    reason_str = "Dynamic Swing Low / Middle Band Entry (3m+HTF MFI Rising)" if is_mb_setup else "Dynamic Swing Low / Retest Bounce (3m+HTF MFI Rising)"
-                    return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason=reason_str)
+        if is_15m_both_mfi_increasing and is_3m_mfi_oversold and is_3m_both_mfi_bouncing and is_higher_low and is_15m_mb_rising:
+            entry_p = ctx.close
+            sl = max(ctx.recent_swing_low - 2.0, entry_p - 20.0)
+            target = entry_p + 35.0
+            return EntrySignal(self.name, PositionSide.LONG, entry_p, sl, target, reason="Dynamic Swing Low Retest Bounce")
         return None
 
     def evaluate_exit(self, ctx: MarketContext, position: Position) -> ExitSignal:
@@ -554,12 +600,28 @@ class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
                 exit_price = ctx.close
             return ExitSignal(True, exit_price, "3m Upper BB / +40pt Profit Booking (HTF MFI Falling Confirmed)")
 
+        # Bearish MFI(14) Divergence Target Exit Check:
+        # Exit Target when Price makes a new Swing High BUT MFI(14) value makes lower high than last Swing High value
+        last_sh_p = getattr(position, "last_swing_high_price", position.entry_price)
+        last_sh_mfi = getattr(position, "last_swing_high_mfi14", ctx.mfi14_15m)
+        if ctx.high > last_sh_p + 1.0 and ctx.mfi14_15m < last_sh_mfi - 1.0:
+            return ExitSignal(True, ctx.close, "Bearish MFI(14) Divergence Swing High Target Exit")
+
         if hold_due_to_surging_mfi:
             return ExitSignal(False, ctx.close, "")  # Waiting / Holding position while 3m MFI is surging or MFI(5)=100 & MFI(14) rising
 
         # Standard strategy fallback exits when MFI is not actively surging:
+        is_mfi14_rising = (ctx.mfi14_15m > ctx.prev_mfi14_15m)
+        points_gained = (position.peak_price - position.entry_price) if position.side == PositionSide.LONG else (position.entry_price - position.peak_price)
+        is_60pt_plus = (points_gained >= 60.0)
+        is_mb_rising = (ctx.mb_20 > ctx.prev_mb_20) if (hasattr(ctx, "prev_mb_20") and ctx.prev_mb_20) else False
+        is_mfi_divergence = (ctx.low < ctx.prev_low) and (ctx.mfi14_15m > ctx.prev_mfi14_15m) if (hasattr(ctx, "prev_low") and ctx.prev_low) else False
+        
+        is_retrace_hold = is_mfi14_rising or is_60pt_plus or is_mb_rising or is_mfi_divergence
+
         if (position.peak_price >= ctx.ub_20 - 5.0 or ctx.high >= ctx.ub_20 - 5.0) and (ctx.mfi14_15m >= 70.0 or ctx.mfi5_15m >= 80.0) and (ctx.close <= ctx.open):
-            return ExitSignal(True, ctx.close, "Swing Low Overbought Retrace Exit")
+            if not is_retrace_hold:
+                return ExitSignal(True, ctx.close, "Swing Low Overbought Retrace Exit")
         if ctx.mfi5_15m < ctx.prev_mfi5_15m and ctx.mfi14_15m < ctx.prev_mfi14_15m:
             return ExitSignal(True, ctx.close, "Swing Low Dual MFI Fall Exit")
         if ctx.close >= position.target_price:
@@ -568,8 +630,11 @@ class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
 
     def calculate_trailing_sl(self, ctx: MarketContext, position: Position) -> float:
         """Dynamic trailing SL: multi-stage profit lock starting above 40 points.
-        No trail before 40 points as long as MFI(14) rising in 15 minutes.
+        No trail before Upper Bollinger Band is reached for Swing Low strategy.
         """
+        if not getattr(position, "ub_reached", False):
+            return position.current_sl
+
         favorable = position.peak_price - position.entry_price if position.side == PositionSide.LONG else position.entry_price - position.peak_price
         sl = position.current_sl
         is_mfi14_rising = (ctx.mfi14_15m > ctx.prev_mfi14_15m) or (ctx.mfi14_15m >= ctx.prev_mfi14_15m and ctx.mfi5_15m > ctx.prev_mfi5_15m)
@@ -658,7 +723,11 @@ class StateMachineHandoverEngine:
                         target_price=signal.target_price,
                         peak_price=signal.entry_price,
                         lot_size=signal.lot_size,
-                        metadata=signal.metadata
+                        metadata=signal.metadata,
+                        ub_reached=False,
+                        mfi14_overbought_reached=False,
+                        last_swing_high_price=signal.entry_price,
+                        last_swing_high_mfi14=ctx.mfi14_15m
                     )
                     self.state = MachineState.STATE_1_ACTIVE_LONG if signal.side == PositionSide.LONG else MachineState.STATE_2_ACTIVE_SHORT
                     return {
@@ -844,9 +913,13 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
     df_15m_calc['mb_20'] = mb
     df_15m_calc['ub_20'] = ub
     df_15m_calc['lb_20'] = lb
+    df_15m_calc['prev_mb_20'] = df_15m_calc['mb_20'].shift(1).bfill()
+    df_15m_calc['prev_prev_mb_20'] = df_15m_calc['mb_20'].shift(2).bfill()
     df_15m_calc['prev_high'] = df_15m_calc['high'].shift(1).fillna(df_15m_calc['high'])
     df_15m_calc['prev_low'] = df_15m_calc['low'].shift(1).fillna(df_15m_calc['low'])
     df_15m_calc['prev_close'] = df_15m_calc['close'].shift(1).fillna(df_15m_calc['close'])
+    df_15m_calc['prev_open'] = df_15m_calc['open'].shift(1).fillna(df_15m_calc['open'])
+    df_15m_calc['prev_prev_low'] = df_15m_calc['low'].shift(2).fillna(df_15m_calc['low'])
 
     # 30m alignment
     if df_30m is not None and not df_30m.empty:
@@ -880,12 +953,14 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
         df_3m_calc['mb_3m'] = mb_3m
         df_3m_calc['ub_3m'] = ub_3m
         df_3m_calc['lb_3m'] = lb_3m
+        df_3m_calc['prev_mb_3m'] = df_3m_calc['mb_3m'].shift(1).bfill()
+        df_3m_calc['prev_prev_mb_3m'] = df_3m_calc['mb_3m'].shift(2).bfill()
         df_3m_calc['prev_mfi5_3m'] = df_3m_calc['mfi5_3m'].shift(1).fillna(50.0)
         df_3m_calc['prev_mfi14_3m'] = df_3m_calc['mfi14_3m'].shift(1).fillna(50.0)
         df_3m_calc['prev_prev_mfi5_3m'] = df_3m_calc['mfi5_3m'].shift(2).fillna(50.0)
         df_3m_calc['prev_prev_mfi14_3m'] = df_3m_calc['mfi14_3m'].shift(2).fillna(50.0)
 
-        df_eval = pd.merge_ordered(df_3m_calc, df_15m_calc[['timestamp', 'mfi5', 'mfi14', 'prev_mfi5', 'prev_mfi14', 'mb_20', 'ub_20', 'lb_20', 'prev_high', 'prev_low', 'prev_close']], on='timestamp', how='left').ffill()
+        df_eval = pd.merge_ordered(df_3m_calc, df_15m_calc[['timestamp', 'mfi5', 'mfi14', 'prev_mfi5', 'prev_mfi14', 'mb_20', 'prev_mb_20', 'prev_prev_mb_20', 'ub_20', 'lb_20', 'prev_high', 'prev_low', 'prev_close', 'prev_open', 'prev_prev_low']], on='timestamp', how='left').ffill()
         df_eval = pd.merge_ordered(df_eval, df_30m_calc[['timestamp', 'mfi5_30m', 'mfi14_30m', 'prev_mfi5_30m', 'prev_mfi14_30m', 'prev_prev_mfi14_30m']], on='timestamp', how='left').ffill()
         df = df_eval.dropna(subset=['open', 'close']).reset_index(drop=True)
     else:
@@ -974,12 +1049,17 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
             mb_3m=float(row['mb_3m']),
             ub_3m=float(row['ub_3m']),
             lb_3m=float(row['lb_3m']),
+            prev_mb_20=float(row.get('prev_mb_20', row['mb_20'])),
+            prev_prev_mb_20=float(row.get('prev_prev_mb_20', row['mb_20'])),
+            prev_mb_3m=float(row.get('prev_mb_3m', row['mb_3m'])),
+            prev_prev_mb_3m=float(row.get('prev_prev_mb_3m', row['mb_3m'])),
             mb_20=float(row['mb_20']),
             ub_20=float(row['ub_20']),
             lb_20=float(row['lb_20']),
             prev_high=float(row['prev_high']),
             prev_low=float(row['prev_low']),
             prev_close=float(row['prev_close']),
+            prev_open=float(row.get('prev_open', row['prev_close'])),
             recent_swing_low=float(recent_low),
             recent_swing_high=float(recent_high),
             dynamic_tolerance=float(dyn_tol),
@@ -999,7 +1079,7 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
                     engine.active_position.metadata["contract"] = contract_symbol
             elif event["event"] == "EXIT" and event["pnl"] < 0:
                 sl_stopped_dates.add(c_date)
-                recovery_eligible = False
+                recovery_eligible = True
 
     # Performance Analytics
     closed_df = pd.DataFrame(engine.closed_trades)

@@ -115,7 +115,9 @@ def map_entry_type_to_strategy_name(entry_type_str: str) -> str:
     """Map human-readable entry signal descriptions to standardized Strategy names in Modular 3-Strategy Suite."""
     if not entry_type_str:
         return "Wick Absorption & Multi-TF Confluence Breakout Entry"
-    if "Recovery" in entry_type_str or "Post-SL" in entry_type_str:
+    if "Dynamic EPM" in entry_type_str or "EPM Low Bounce" in entry_type_str:
+        return "Dynamic EPM Low Bounce LONG Entry"
+    elif "Recovery" in entry_type_str or "Post-SL" in entry_type_str:
         return "One-Time Post-SL Recovery Re-Entry (+2 Lots)"
     elif "Swing Low" in entry_type_str or "SWING" in entry_type_str or "Retest" in entry_type_str:
         return "Dynamic Swing Low First Breakout Retest Entry"
@@ -505,7 +507,7 @@ class TelegramCommandListener:
                             elif first_word in ("N", "NO", "/N"):
                                 return "N", None
                             elif first_word in ("LIVE", "REAL", "/LIVE"):
-                                lots = 1
+                                lots = None
                                 if len(parts) > 1 and parts[1].isdigit():
                                     lots = max(1, int(parts[1]))
                                 return "LIVE", lots
@@ -2051,10 +2053,17 @@ def run_cloud_bot() -> None:
     grid_from_memory = False
     current_epm_buffer = 0.13
 
+    # Determine target index (SENSEX or BANKNIFTY) from environment variable
+    target_index = os.getenv("INDEX_NAME", os.getenv("TARGET_INDEX", "SENSEX")).upper().strip()
+    is_bn_bot = "BANKNIFTY" in target_index
+    spot_exch = "NSE" if is_bn_bot else "BSE"
+    spot_sym = "BANKNIFTY" if is_bn_bot else "SENSEX"
+    spot_tok = "99926009" if is_bn_bot else "99919000"
+
     # Get Spot Price
     try:
-        spot_res = smart_api.ltpData("BSE", "SENSEX", "99919000")
-        spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else 77500.0
+        spot_res = smart_api.ltpData(spot_exch, spot_sym, spot_tok)
+        spot_price = float(spot_res["data"]["ltp"]) if isinstance(spot_res, dict) and spot_res.get("data") else (51500.0 if is_bn_bot else 77500.0)
         spot_open = float(spot_res["data"]["open"]) if isinstance(spot_res, dict) and spot_res.get("data") and spot_res["data"].get("open") else spot_price
     except Exception:
         pass
@@ -2242,8 +2251,8 @@ def run_cloud_bot() -> None:
                 grid_from_memory = False
 
     if grid is None:
-        logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot %s...", current_slot)
-        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer)
+        logger.info("🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot %s (%s)...", current_slot, target_index)
+        grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer, index_name=target_index)
         ce_contract = ce_contracts[0]
         pe_contract = pe_contracts[0]
         ce_ltp = grid.ce_leg.ltp
@@ -2548,12 +2557,13 @@ def run_cloud_bot() -> None:
                     send_mobile_alert("🛑 *REMOTE STOP COMMAND RECEIVED*\nBot execution halted safely.")
                     break
                 elif cmd == "LIVE":
-                    if remote_lots:
+                    if remote_lots is not None:
                         lot_size = remote_lots
                     if execution_mode != "LIVE":
                         execution_mode = "LIVE"
+                        active_units = active_lot_units if ('active_lot_units' in locals() and active_lot_units) else (30 if is_bn_bot else 20)
                         logger.info("⚠️ [MODE SWITCH] Switched to REAL LIVE TRADING MODE via Telegram (Lot Size: %d).", lot_size)
-                        send_mobile_alert(f"🚨 *MODE SWITCHED TO REAL LIVE TRADING*\nLot Size: *{lot_size} Lot(s)* ({lot_size * 20} Qty)\nReal orders will be placed on Angel One.")
+                        send_mobile_alert(f"🚨 *MODE SWITCHED TO REAL LIVE TRADING*\nIndex: *{target_index}*\nLot Size: *{lot_size} Lot(s)* ({lot_size * active_units} Qty)\nReal orders will be placed on Angel One.")
                 elif cmd == "DEMO" and execution_mode != "PAPER":
                     execution_mode = "PAPER"
                     logger.info("🛡️ [MODE SWITCH] Switched back to SAFE PAPER TRADING MODE via Telegram.")
@@ -3122,11 +3132,23 @@ def run_cloud_bot() -> None:
                                         active_sl_ce = live_ce_ltp - 20.0
                                         entry_type_str_ce = f"CE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
                                     elif is_breakout_entry_ce:
-                                        ce_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_ce = max(c_low_15m - 15.0, live_ce_ltp - 20.0) if c_low_15m else live_ce_ltp - 20.0
-                                        entry_type_str_ce = f"CE Wick Absorption & Multi-TF Confluence Breakout Entry (Score: {conf_score_ce}/100, Wick: {wick_pct_15m_ce:.1f}% | SL: ₹{active_sl_ce:.2f})"
+                                        # Signal Alert Only - Do NOT trigger Live or Demo trade!
+                                        breakout_reason_ce = f"CE Wick Absorption & Multi-TF Confluence Breakout Entry (Score: {conf_score_ce}/100, Wick: {wick_pct_15m_ce:.1f}%)"
+                                        logger.info("🔔 [SIGNAL ALERT ONLY] %s on %s", breakout_reason_ce, ce_contract.trading_symbol)
+                                        send_mobile_alert(f"🔔 *SIGNAL ALERT ONLY (NO TRADE EXECUTED)*\n\nSignal Name: *Wick Absorption & Multi-TF Confluence Breakout*\nContract: *{ce_contract.trading_symbol}*\nLTP: ₹{live_ce_ltp:.2f}\nScore: {conf_score_ce}/100 | Wick: {wick_pct_15m_ce:.1f}%\nNotice: Signal alert notification only. No trade placed.")
+                                        excel_tracker.add_signal({
+                                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                                            "mode": execution_mode,
+                                            "signal_name": "Wick Absorption & Multi-TF Confluence Breakout Entry",
+                                            "entry_reason": breakout_reason_ce,
+                                            "trading_symbol": ce_contract.trading_symbol,
+                                            "entry_price": live_ce_ltp,
+                                            "exit_reason": "SIGNAL_ALERT_ONLY",
+                                            "exit_price": live_ce_ltp,
+                                            "pnl_pts": 0.0,
+                                            "pnl_amount": 0.0,
+                                            "status": "ALERT_ONLY_NO_TRADE"
+                                        })
                                     elif is_direction_aligned_ce and is_clean_initial_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True
@@ -3450,11 +3472,23 @@ def run_cloud_bot() -> None:
                                         active_sl_pe = live_pe_ltp - 20.0
                                         entry_type_str_pe = f"PE One-Time Post-SL Recovery Re-Entry (+2 Lots, Total: {lot_size} Lots | SL-20)"
                                     elif is_breakout_entry_pe:
-                                        pe_entry_signal = True
-                                        initial_entry_happened = True
-                                        lot_size = base_lot_size
-                                        active_sl_pe = max(p_low_15m - 15.0, live_pe_ltp - 20.0) if p_low_15m else live_pe_ltp - 20.0
-                                        entry_type_str_pe = f"PE Wick Absorption & Multi-TF Confluence Breakout Entry (Score: {conf_score_pe}/100, Wick: {wick_pct_15m_pe:.1f}% | SL: ₹{active_sl_pe:.2f})"
+                                        # Signal Alert Only - Do NOT trigger Live or Demo trade!
+                                        breakout_reason_pe = f"PE Wick Absorption & Multi-TF Confluence Breakout Entry (Score: {conf_score_pe}/100, Wick: {wick_pct_15m_pe:.1f}%)"
+                                        logger.info("🔔 [SIGNAL ALERT ONLY] %s on %s", breakout_reason_pe, pe_contract.trading_symbol)
+                                        send_mobile_alert(f"🔔 *SIGNAL ALERT ONLY (NO TRADE EXECUTED)*\n\nSignal Name: *Wick Absorption & Multi-TF Confluence Breakout*\nContract: *{pe_contract.trading_symbol}*\nLTP: ₹{live_pe_ltp:.2f}\nScore: {conf_score_pe}/100 | Wick: {wick_pct_15m_pe:.1f}%\nNotice: Signal alert notification only. No trade placed.")
+                                        excel_tracker.add_signal({
+                                            "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                                            "mode": execution_mode,
+                                            "signal_name": "Wick Absorption & Multi-TF Confluence Breakout Entry",
+                                            "entry_reason": breakout_reason_pe,
+                                            "trading_symbol": pe_contract.trading_symbol,
+                                            "entry_price": live_pe_ltp,
+                                            "exit_reason": "SIGNAL_ALERT_ONLY",
+                                            "exit_price": live_pe_ltp,
+                                            "pnl_pts": 0.0,
+                                            "pnl_amount": 0.0,
+                                            "status": "ALERT_ONLY_NO_TRADE"
+                                        })
                                     elif is_direction_aligned_pe and is_clean_initial_entry_pe:
                                         pe_entry_signal = True
                                         initial_entry_happened = True
@@ -3945,15 +3979,28 @@ def run_cloud_bot() -> None:
                         if execution_mode == "LIVE":
                             execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_ce_ltp)
                         
-                        excel_tracker.add_order({
+                        ce_exit_qty = lot_size * active_lot_units
+                        ce_pnl_pts = live_ce_ltp - active_entry_price
+                        ce_pnl_amount = ce_pnl_pts * ce_exit_qty
+                        ce_entry_reason_str = entry_type_str_ce if ('entry_type_str_ce' in locals() and entry_type_str_ce) else active_strategy_name
+                        ce_exit_row = {
                             "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
                             "mode": execution_mode,
                             "state": exit_state_str,
+                            "signal_name": active_strategy_name,
+                            "entry_reason": ce_entry_reason_str,
+                            "exit_reason": exit_title_str,
                             "trading_symbol": active_contract.trading_symbol,
-                            "price": live_ce_ltp,
-                            "qty": lot_size * 20,
+                            "entry_price": active_entry_price,
+                            "exit_price": live_ce_ltp,
+                            "qty": ce_exit_qty,
+                            "pnl_pts": round(ce_pnl_pts, 2),
+                            "pnl_amount": round(ce_pnl_amount, 2),
+                            "result": "PROFIT" if ce_pnl_pts > 0 else "LOSS",
                             "trades_count": trades_completed + 1
-                        })
+                        }
+                        excel_tracker.add_order(ce_exit_row)
+                        excel_tracker.add_signal(ce_exit_row)
                         
                         bot_state = "IDLE"
                         active_contract = None
@@ -4020,15 +4067,28 @@ def run_cloud_bot() -> None:
                         if execution_mode == "LIVE":
                             execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_ce_ltp)
                         
-                        excel_tracker.add_order({
+                        ce_tp_qty = lot_size * active_lot_units
+                        ce_tp_pnl_pts = live_ce_ltp - active_entry_price
+                        ce_tp_pnl_amount = ce_tp_pnl_pts * ce_tp_qty
+                        ce_tp_entry_reason = entry_type_str_ce if ('entry_type_str_ce' in locals() and entry_type_str_ce) else active_strategy_name
+                        ce_tp_row = {
                             "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
                             "mode": execution_mode,
                             "state": "EXIT_TP",
+                            "signal_name": active_strategy_name,
+                            "entry_reason": ce_tp_entry_reason,
+                            "exit_reason": tp_reason,
                             "trading_symbol": active_contract.trading_symbol,
-                            "price": live_ce_ltp,
-                            "qty": lot_size * 20,
+                            "entry_price": active_entry_price,
+                            "exit_price": live_ce_ltp,
+                            "qty": ce_tp_qty,
+                            "pnl_pts": round(ce_tp_pnl_pts, 2),
+                            "pnl_amount": round(ce_tp_pnl_amount, 2),
+                            "result": "PROFIT" if ce_tp_pnl_pts > 0 else "LOSS",
                             "trades_count": trades_completed + 1
-                        })
+                        }
+                        excel_tracker.add_order(ce_tp_row)
+                        excel_tracker.add_signal(ce_tp_row)
                         
                         bot_state = "IDLE"
                         active_contract = None
@@ -4382,15 +4442,28 @@ def run_cloud_bot() -> None:
                         if execution_mode == "LIVE":
                             execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, lot_size * 20, live_pe_ltp)
                         
-                        excel_tracker.add_order({
+                        pe_exit_qty = lot_size * active_lot_units
+                        pe_pnl_pts = live_pe_ltp - active_entry_price
+                        pe_pnl_amount = pe_pnl_pts * pe_exit_qty
+                        pe_entry_reason_str = entry_type_str_pe if ('entry_type_str_pe' in locals() and entry_type_str_pe) else active_strategy_name
+                        pe_exit_row = {
                             "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
                             "mode": execution_mode,
                             "state": exit_state_str,
+                            "signal_name": active_strategy_name,
+                            "entry_reason": pe_entry_reason_str,
+                            "exit_reason": exit_title_str,
                             "trading_symbol": active_contract.trading_symbol,
-                            "price": live_pe_ltp,
-                            "qty": lot_size * 20,
+                            "entry_price": active_entry_price,
+                            "exit_price": live_pe_ltp,
+                            "qty": pe_exit_qty,
+                            "pnl_pts": round(pe_pnl_pts, 2),
+                            "pnl_amount": round(pe_pnl_amount, 2),
+                            "result": "PROFIT" if pe_pnl_pts > 0 else "LOSS",
                             "trades_count": trades_completed + 1
-                        })
+                        }
+                        excel_tracker.add_order(pe_exit_row)
+                        excel_tracker.add_signal(pe_exit_row)
                         
                         bot_state = "IDLE"
                         active_contract = None
@@ -4518,3 +4591,4 @@ if __name__ == "__main__":
     except Exception as exc:
         logger.error("❌ CLOUD BOT EXECUTION ERROR: %s", exc, exc_info=True)
         sys.exit(1)
+c
