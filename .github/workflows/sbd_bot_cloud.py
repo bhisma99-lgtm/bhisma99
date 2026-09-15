@@ -3910,7 +3910,13 @@ def run_cloud_bot() -> None:
                     now_time_str_exit = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live = (now_time_str_exit >= "15:25")
 
-                    is_mfi_exit_triggered_ce = is_profit_booking_exit_ce or is_eod_exit_live or is_swing_high_rejection_exit_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce
+                    # Exit rest lots if scaled out and approaching/reaching 15m Overbought Zone (MFI14 >= 70.0 or MFI5 > 95.0) while BOTH 15m MFIs are falling
+                    is_rest_lots_overbought_mfi_fall_ce = offloaded and (
+                        (curr_mfi14_ce >= 70.0 or prev_mfi14_ce >= 70.0 or curr_mfi5_ce > 95.0 or prev_mfi5_ce > 95.0)
+                        and (curr_mfi5_ce < prev_mfi5_ce and curr_mfi14_ce < prev_mfi14_ce)
+                    )
+
+                    is_mfi_exit_triggered_ce = is_profit_booking_exit_ce or is_eod_exit_live or is_swing_high_rejection_exit_ce or is_30m_dual_mfi_fall_exit_ce or is_ub_reached_dual_mfi_fall_ce or is_mb_rejection_ce or is_dual_mfi_falling_ce or is_overbought_mfi14_fall_ce or is_reentry_ub_cross_fall_ce or is_recovery_mfi_fall_ce or is_post_breakdown_rejection_mfi_fall_ce or is_rest_lots_overbought_mfi_fall_ce
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_ce_ltp >= surge_target_price)
@@ -3922,26 +3928,31 @@ def run_cloud_bot() -> None:
                             trailing_active = True
                             peak_price = live_ce_ltp
                             
-                            # Smart Scaling Out (Offload major portion if holding multiple lots)
+                            # Smart Scaling Out (Offload partial lots if holding multiple lots)
                             if lot_size > 1 and not offloaded:
                                 offloaded = True
-                                major_portion = lot_size - 1
-                                remaining = 1
-                                qty_to_offload = major_portion * 20
+                                is_bn_trade_ce = ("BANKNIFTY" in active_contract.trading_symbol)
+                                if is_bn_trade_ce:
+                                    offload_lots = lot_size - 1
+                                else:
+                                    offload_lots = max(1, math.ceil(lot_size / 2)) if is_target_triggered and not is_surge_triggered else (lot_size - 1)
+                                remaining = lot_size - offload_lots
+                                qty_to_offload = offload_lots * active_lot_units
                                 
-                                logger.info("🚀 [SMART SCALING] Triggered. Offloading major portion: %d lots at ₹%.2f", major_portion, live_ce_ltp)
+                                logger.info("🚀 [SMART SCALING] Triggered. Offloading %d lots at ₹%.2f (Remaining: %d lots)", offload_lots, live_ce_ltp, remaining)
                                 if execution_mode == "LIVE":
                                     execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, qty_to_offload, live_ce_ltp)
                                 
-                                # Adjust SL for the remaining 1 lot
+                                # Adjust SL for the remaining lots
                                 if is_surge_triggered:
                                     active_sl = active_entry_price  # Cost Price / Break-even
-                                    scale_reason = f"Surge Target (3x RR) hit. Offloaded major portion ({major_portion} lots) at ₹{live_ce_ltp:.2f}. Remaining 1 runner lot SL moved to Cost Price ₹{active_entry_price:.2f}."
+                                    scale_reason = f"Surge Target (3x RR) hit. Offloaded major portion ({offload_lots} lots) at ₹{live_ce_ltp:.2f}. Remaining {remaining} lot(s) SL moved to Cost Price ₹{active_entry_price:.2f}."
                                 else:
-                                    active_sl = max(active_sl, live_ce_ltp - 20.0)  # Wide 20-point TSL
-                                    scale_reason = f"Practical Target hit. Offloaded major portion ({major_portion} lots) at ₹{live_ce_ltp:.2f}. Remaining 1 runner lot SL set to wide Trailing SL ₹{active_sl:.2f} (20-point buffer)."
+                                    candle_low_sl_ce = (c_low_15m - 2.0) if (c_low_15m is not None and c_low_15m > 0.0) else (live_ce_ltp - 20.0)
+                                    active_sl = max(active_sl, candle_low_sl_ce)  # Trail upon Candle Low - 2 points
+                                    scale_reason = f"Practical Target hit. Offloaded 50% / partial portion ({offload_lots} lots) at ₹{live_ce_ltp:.2f}. Remaining {remaining} lot(s) SL set to Candle Low - 2.0pt (₹{active_sl:.2f})."
                                     
-                                lot_size = remaining  # We only have the 1 runner lot left now
+                                lot_size = remaining  # We only have remaining lots left now
                                 send_mobile_alert(f"🚀 *SMART SCALING OUT ACTIVE*\n\n{scale_reason}")
                             else:
                                 # Normal single lot trailing stop activation
@@ -3954,10 +3965,11 @@ def run_cloud_bot() -> None:
                         elif live_ce_ltp > peak_price:
                             peak_price = live_ce_ltp
                             if offloaded:
-                                # If scaled out, only practical target remains trailing with wide 20-point stop, surge remains at cost price
+                                # If scaled out, trail runner lots at Candle Low - 2.0 points
                                 if not is_surge_triggered:
-                                    active_sl = max(active_sl, live_ce_ltp - 20.0)
-                                    logger.info("📈 [TRAILING SL RAISED] CE runner lot peak rose to ₹%.2f. Wide TSL: ₹%.2f.", peak_price, active_sl)
+                                    candle_low_sl_ce = (c_low_15m - 2.0) if (c_low_15m is not None and c_low_15m > 0.0) else (live_ce_ltp - 20.0)
+                                    active_sl = max(active_sl, candle_low_sl_ce)
+                                    logger.info("📈 [TRAILING SL RAISED] CE runner lot peak rose to ₹%.2f. Candle Low - 2pt TSL: ₹%.2f.", peak_price, active_sl)
                             else:
                                 active_sl = max(active_sl, live_ce_ltp - trail_buffer)
                                 logger.info("📈 [TRAILING SL RAISED] CE peak rose to ₹%.2f. Trailing SL: ₹%.2f.", peak_price, active_sl)
@@ -4373,7 +4385,13 @@ def run_cloud_bot() -> None:
                     now_time_str_exit_pe = datetime.now(IST).strftime("%H:%M")
                     is_eod_exit_live_pe = (now_time_str_exit_pe >= "15:25")
 
-                    is_mfi_exit_triggered_pe = is_profit_booking_exit_pe or is_eod_exit_live_pe or is_swing_high_rejection_exit_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe
+                    # Exit rest lots if scaled out and approaching/reaching 15m Overbought Zone (MFI14 >= 70.0 or MFI5 > 95.0) while BOTH 15m MFIs are falling
+                    is_rest_lots_overbought_mfi_fall_pe = offloaded and (
+                        (curr_mfi14_pe >= 70.0 or prev_mfi14_pe >= 70.0 or curr_mfi5_pe > 95.0 or prev_mfi5_pe > 95.0)
+                        and (curr_mfi5_pe < prev_mfi5_pe and curr_mfi14_pe < prev_mfi14_pe)
+                    )
+
+                    is_mfi_exit_triggered_pe = is_profit_booking_exit_pe or is_eod_exit_live_pe or is_swing_high_rejection_exit_pe or is_breakout_mfi14_or_both_fall_pe or is_breakout_weak_close_retrace_pe or is_breakout_mb_rejection_pe or is_mb_rejection_pe or is_dual_mfi_falling_pe or is_overbought_mfi14_fall_pe or is_reentry_ub_cross_fall_pe or is_recovery_mfi_fall_pe or is_post_breakdown_rejection_mfi_fall_pe or is_rest_lots_overbought_mfi_fall_pe
                     
                     # 1. Check for Surge/Target Trailing SL activation and Smart Offloading
                     is_surge_triggered = is_surge_window and (live_pe_ltp >= surge_target_price)
@@ -4385,26 +4403,31 @@ def run_cloud_bot() -> None:
                             trailing_active = True
                             peak_price = live_pe_ltp
                             
-                            # Smart Scaling Out (Offload major portion if holding multiple lots)
+                            # Smart Scaling Out (Offload partial lots if holding multiple lots)
                             if lot_size > 1 and not offloaded:
                                 offloaded = True
-                                major_portion = lot_size - 1
-                                remaining = 1
-                                qty_to_offload = major_portion * 20
+                                is_bn_trade_pe = ("BANKNIFTY" in active_contract.trading_symbol)
+                                if is_bn_trade_pe:
+                                    offload_lots = lot_size - 1
+                                else:
+                                    offload_lots = max(1, math.ceil(lot_size / 2)) if is_target_triggered and not is_surge_triggered else (lot_size - 1)
+                                remaining = lot_size - offload_lots
+                                qty_to_offload = offload_lots * active_lot_units
                                 
-                                logger.info("🚀 [SMART SCALING] Triggered. Offloading major portion: %d lots at ₹%.2f", major_portion, live_pe_ltp)
+                                logger.info("🚀 [SMART SCALING] Triggered. Offloading %d lots at ₹%.2f (Remaining: %d lots)", offload_lots, live_pe_ltp, remaining)
                                 if execution_mode == "LIVE":
                                     execute_failsafe_sell(smart_api, active_contract.trading_symbol, active_contract.symbol_token, qty_to_offload, live_pe_ltp)
                                 
-                                # Adjust SL for the remaining 1 lot
+                                # Adjust SL for the remaining lots
                                 if is_surge_triggered:
                                     active_sl = active_entry_price  # Cost Price / Break-even
-                                    scale_reason = f"Surge Target (3x RR) hit. Offloaded major portion ({major_portion} lots) at ₹{live_pe_ltp:.2f}. Remaining 1 runner lot SL moved to Cost Price ₹{active_entry_price:.2f}."
+                                    scale_reason = f"Surge Target (3x RR) hit. Offloaded major portion ({offload_lots} lots) at ₹{live_pe_ltp:.2f}. Remaining {remaining} lot(s) SL moved to Cost Price ₹{active_entry_price:.2f}."
                                 else:
-                                    active_sl = max(active_sl, live_pe_ltp - 20.0)  # Wide 20-point TSL
-                                    scale_reason = f"Practical Target hit. Offloaded major portion ({major_portion} lots) at ₹{live_pe_ltp:.2f}. Remaining 1 runner lot SL set to wide Trailing SL ₹{active_sl:.2f} (20-point buffer)."
+                                    candle_low_sl_pe = (p_low_15m - 2.0) if (p_low_15m is not None and p_low_15m > 0.0) else (live_pe_ltp - 20.0)
+                                    active_sl = max(active_sl, candle_low_sl_pe)  # Trail upon Candle Low - 2 points
+                                    scale_reason = f"Practical Target hit. Offloaded 50% / partial portion ({offload_lots} lots) at ₹{live_pe_ltp:.2f}. Remaining {remaining} lot(s) SL set to Candle Low - 2.0pt (₹{active_sl:.2f})."
                                     
-                                lot_size = remaining  # We only have the 1 runner lot left now
+                                lot_size = remaining  # We only have remaining lots left now
                                 send_mobile_alert(f"🚀 *SMART SCALING OUT ACTIVE*\n\n{scale_reason}")
                             else:
                                 # Normal single lot trailing stop activation
@@ -4417,10 +4440,11 @@ def run_cloud_bot() -> None:
                         elif live_pe_ltp > peak_price:
                             peak_price = live_pe_ltp
                             if offloaded:
-                                # If scaled out, only practical target remains trailing with wide 20-point stop, surge remains at cost price
+                                # If scaled out, trail runner lots at Candle Low - 2.0 points
                                 if not is_surge_triggered:
-                                    active_sl = max(active_sl, live_pe_ltp - 20.0)
-                                    logger.info("📈 [TRAILING SL RAISED] PE runner lot peak rose to ₹%.2f. Wide TSL: ₹%.2f.", peak_price, active_sl)
+                                    candle_low_sl_pe = (p_low_15m - 2.0) if (p_low_15m is not None and p_low_15m > 0.0) else (live_pe_ltp - 20.0)
+                                    active_sl = max(active_sl, candle_low_sl_pe)
+                                    logger.info("📈 [TRAILING SL RAISED] PE runner lot peak rose to ₹%.2f. Candle Low - 2pt TSL: ₹%.2f.", peak_price, active_sl)
                             else:
                                 active_sl = max(active_sl, live_pe_ltp - trail_buffer)
                                 logger.info("📈 [TRAILING SL RAISED] PE peak rose to ₹%.2f. Trailing SL: ₹%.2f.", peak_price, active_sl)
