@@ -543,6 +543,14 @@ class TelegramCommandListener:
                                     return "REENTRY ON", None
                                 else:
                                     return "REENTRY OFF", None
+                            elif first_word in ("UNLOCK", "UN-LOCK", "/UNLOCK"):
+                                side = parts[1] if len(parts) > 1 else "ALL"
+                                if side in ("CE", "CALL"):
+                                    return "UNLOCK CE", None
+                                elif side in ("PE", "PUT"):
+                                    return "UNLOCK PE", None
+                                else:
+                                    return "UNLOCK ALL", None
         except Exception:
             pass
         return None, None
@@ -682,17 +690,21 @@ def send_telegram_voice_alert(message: str) -> None:
         voice_bytes = mp3_bytes
         filename = "alert.ogg"
         try:
-            proc = subprocess.Popen(
-                ['ffmpeg', '-y', '-i', 'pipe:0', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-f', 'ogg', 'pipe:1'],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            ogg_opus_data, _ = proc.communicate(input=mp3_bytes, timeout=8)
-            if proc.returncode == 0 and len(ogg_opus_data) > 0:
-                voice_bytes = ogg_opus_data
+            import shutil
+            if shutil.which('ffmpeg'):
+                proc = subprocess.Popen(
+                    ['ffmpeg', '-y', '-i', 'pipe:0', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-f', 'ogg', 'pipe:1'],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                ogg_opus_data, _ = proc.communicate(input=mp3_bytes, timeout=8)
+                if proc.returncode == 0 and len(ogg_opus_data) > 0:
+                    voice_bytes = ogg_opus_data
+                else:
+                    logger.warning("ffmpeg conversion returned empty or non-zero status; using raw audio.")
             else:
-                logger.warning("ffmpeg conversion returned empty or non-zero status; using raw audio.")
+                logger.info("ffmpeg not found in PATH; sending raw audio for TTS alert.")
         except Exception as conv_err:
             logger.warning("Could not convert TTS audio to Opus OGG with ffmpeg: %s", conv_err)
         
@@ -2291,7 +2303,9 @@ def run_cloud_bot() -> None:
             "   (Accepts or declines pending trade swap signals)\n\n"
             "7. *Re-Entry Control:* `REENTRY ON` or `REENTRY OFF`\n"
             "   (Enables or disables trend continuation re-entry logic)\n\n"
-            "8. *Safety Stops:* `STOP` / `HALT` / `EXIT` / `CLOSE`\n"
+            "8. *Unlock Side:* `UNLOCK CE` / `UNLOCK PE` / `UNLOCK ALL`\n"
+            "   (Unlocks Stop Loss side locks for fresh entries on CE, PE, or Both sides)\n\n"
+            "9. *Safety Stops:* `STOP` / `HALT` / `EXIT` / `CLOSE`\n"
             "   (Exits all active positions immediately at Market price and halts bot)\n\n"
             "💡 *Smart Scaling (Auto-Activated):*\n"
             "• *Surge Target (3x Risk):* Sells major portion, moves remaining runner lot SL to Cost Price.\n"
@@ -2647,6 +2661,19 @@ def run_cloud_bot() -> None:
                     allow_reentry_live = False
                     logger.info("⚙️ [TELEGRAM] Re-entry logic disabled via Telegram.")
                     send_mobile_alert("⚙️ *RE-ENTRY LOGIC DISABLED*\n\nTrend continuation re-entries are now INACTIVE.")
+                elif cmd == "UNLOCK CE":
+                    ce_sl_hit_today = False
+                    logger.info("🔓 [TELEGRAM] CE Side UNLOCKED via Telegram command. Fresh CE entries re-enabled.")
+                    send_mobile_alert("🔓 *CE SIDE UNLOCKED VIA TELEGRAM*\n\nCE side Stop Loss lock cleared. Fresh CE entries are now allowed.")
+                elif cmd == "UNLOCK PE":
+                    pe_sl_hit_today = False
+                    logger.info("🔓 [TELEGRAM] PE Side UNLOCKED via Telegram command. Fresh PE entries re-enabled.")
+                    send_mobile_alert("🔓 *PE SIDE UNLOCKED VIA TELEGRAM*\n\nPE side Stop Loss lock cleared. Fresh PE entries are now allowed.")
+                elif cmd == "UNLOCK ALL":
+                    ce_sl_hit_today = False
+                    pe_sl_hit_today = False
+                    logger.info("🔓 [TELEGRAM] ALL Sides (CE & PE) UNLOCKED via Telegram command. Fresh entries re-enabled.")
+                    send_mobile_alert("🔓 *ALL SIDES UNLOCKED VIA TELEGRAM*\n\nCE and PE Stop Loss locks cleared. Fresh entries are now fully re-enabled.")
                 elif cmd == "SL" and bot_state in ("CE_LONG", "PE_LONG"):
                     active_sl = remote_lots
                     logger.info("⚠️ [TELEGRAM] Stop Loss manually updated to ₹%.2f.", active_sl)
