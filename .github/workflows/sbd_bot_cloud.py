@@ -2910,7 +2910,9 @@ def run_cloud_bot() -> None:
                                 is_breakout_type1_ce = is_near_lower_bb_3m_ce and is_mfi_htf_supported_ce and (is_3m_confluence_pass_ce or is_15m_dual_confluence_pass_ce)
 
                                 # Breakout Condition #2: Bullish MFI Divergence (Price Lower Low + MFI Higher Low)
-                                is_lower_low_price_ce = (c_low_15m is not None and prev_c_low_15m is not None and c_low_15m < prev_c_low_15m) or (c_low_3m_ce is not None and prev_c_low_3m_ce is not None and c_low_3m_ce < prev_c_low_3m_ce) if ('prev_c_low_15m' in locals() or 'c_low_3m_ce' in locals()) else False
+                                _prev_c_low_15m = locals().get('prev_c_low_15m')
+                                _prev_c_low_3m_ce = locals().get('prev_c_low_3m_ce')
+                                is_lower_low_price_ce = (c_low_15m is not None and _prev_c_low_15m is not None and c_low_15m < _prev_c_low_15m) or (c_low_3m_ce is not None and _prev_c_low_3m_ce is not None and c_low_3m_ce < _prev_c_low_3m_ce)
                                 is_higher_low_mfi_ce = (mfi5_15m > prev_mfi5_15m or mfi14_15m > prev_mfi14_15m or mfi5_3m > prev_mfi5_3m)
                                 is_breakout_type2_ce = is_lower_low_price_ce and is_higher_low_mfi_ce and is_bounce_open_ce
 
@@ -3226,7 +3228,9 @@ def run_cloud_bot() -> None:
                                 is_breakout_type1_pe = is_near_lower_bb_3m_pe and is_mfi_htf_supported_pe and (is_3m_confluence_pass_pe or is_15m_dual_confluence_pass_pe)
 
                                 # Breakout Condition #2: Bullish MFI Divergence PE (Price Lower Low + MFI Higher Low)
-                                is_lower_low_price_pe = (p_low_15m is not None and prev_p_low_15m is not None and p_low_15m < prev_p_low_15m) or (c_low_3m_pe is not None and prev_c_low_3m_pe is not None and c_low_3m_pe < prev_c_low_3m_pe) if ('prev_p_low_15m' in locals() or 'c_low_3m_pe' in locals()) else False
+                                _prev_p_low_15m = locals().get('prev_p_low_15m')
+                                _prev_c_low_3m_pe = locals().get('prev_c_low_3m_pe')
+                                is_lower_low_price_pe = (p_low_15m is not None and _prev_p_low_15m is not None and p_low_15m < _prev_p_low_15m) or (c_low_3m_pe is not None and _prev_c_low_3m_pe is not None and c_low_3m_pe < _prev_c_low_3m_pe)
                                 is_higher_low_mfi_pe = (mfi5_15m_pe > prev_mfi5_15m_pe or mfi14_15m_pe > prev_mfi14_15m_pe or mfi5_3m_pe > prev_mfi5_3m_pe)
                                 is_breakout_type2_pe = is_lower_low_price_pe and is_higher_low_mfi_pe and is_bounce_open_pe
 
