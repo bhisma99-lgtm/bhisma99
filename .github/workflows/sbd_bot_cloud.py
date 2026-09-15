@@ -318,13 +318,11 @@ def calculate_master_grid_leg(
     ltp_val = float(ltp)
     buf_val = float(buffer)
 
-    epm_val = ltp_val * abs_delta * time_factor * (vix / 100.0)
-    epm_range = ltp_val * epm_val
-
-    epm_lower_range = ltp_val - (epm_range * abs_delta * buf_val)
-    target_epm = ltp_val + (epm_range * abs_delta * buf_val)
-    sl_auto = epm_lower_range - float(sl_offset)
-    practical_target = ltp_val + (index_move * abs_delta * 0.21)
+    option_move = float(index_move) * abs_delta
+    epm_lower_range = max(5.0, ltp_val - (option_move * buf_val))
+    target_epm = ltp_val + (option_move * buf_val)
+    sl_auto = max(5.0, epm_lower_range - float(sl_offset))
+    practical_target = ltp_val + (option_move * 0.21)
 
     return MasterGridLeg(
         option_type=str(option_type).upper(),
