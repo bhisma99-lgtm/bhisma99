@@ -167,22 +167,87 @@ def to_ist_datetime(value: Any = None) -> datetime:
     return datetime.now(IST)
 
 
-def calculate_dte_sqrt(expiry: Any, as_of: Any = None) -> tuple[float, float]:
-    """Deterministic trading-day DTE mapping:
-      Monday=4.0, Tuesday=3.0, Wednesday=2.0, Thursday=1.0, Friday/Weekend=5.0
-    """
-    as_of_ist = to_ist_datetime(as_of)
-    wd = as_of_ist.weekday()
-    if wd == 0:
-        dte_days = 4.0
-    elif wd == 1:
-        dte_days = 3.0
-    elif wd == 2:
-        dte_days = 2.0
-    elif wd == 3:
-        dte_days = 1.0
+@contextlib.contextmanager
+def suppress_stdout_stderr():
+    """Suppress low-level stdout/stderr output during verbose SmartAPI calls."""
+    try:
+        null_fd = os.open(os.devnull, os.O_RDWR)
+        save_stdout = os.dup(1)
+        save_stderr = os.dup(2)
+        os.dup2(null_fd, 1)
+        os.dup2(null_fd, 2)
+        yield
+    except Exception:
+        yield
+    finally:
+        try:
+            os.dup2(save_stdout, 1)
+            os.dup2(save_stderr, 2)
+            os.close(null_fd)
+            os.close(save_stdout)
+            os.close(save_stderr)
+        except Exception:
+            pass
+
+
+def get_last_tuesday_of_month(year: int, month: int) -> date:
+    """Find the last Tuesday of a given month and year."""
+    if month == 12:
+        last_day = date(year, 12, 31)
     else:
-        dte_days = 5.0
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+    offset = (last_day.weekday() - 1) % 7
+    return last_day - timedelta(days=offset)
+
+
+def count_trading_days(start_date: date, end_date: date) -> int:
+    """Count Monday-Friday trading days between start_date and end_date."""
+    if start_date >= end_date:
+        return 0
+    cur = start_date
+    trading_days = 0
+    while cur < end_date:
+        if cur.weekday() < 5:  # Mon-Fri
+            trading_days += 1
+        cur += timedelta(days=1)
+    return max(1, trading_days)
+
+
+def calculate_dte_sqrt(expiry: Any, as_of: Any = None, index_name: str = "SENSEX") -> tuple[float, float]:
+    """Calculate deterministic trading-day DTE mapping to contract expiry date.
+    Counts actual trading days (Mon-Fri) from as_of date to expiry date.
+    For BankNifty (monthly expiry on last Tuesday of the month), accurately counts trading days to expiry.
+    """
+    as_of_dt = to_ist_datetime(as_of)
+    today = as_of_dt.date()
+    is_bn = "BANKNIFTY" in str(index_name).upper() or (isinstance(expiry, str) and "BANKNIFTY" in expiry.upper())
+
+    expiry_date = None
+    if expiry:
+        try:
+            exp_dt = to_ist_datetime(expiry)
+            expiry_date = exp_dt.date()
+        except Exception:
+            pass
+
+    if not expiry_date:
+        if is_bn:
+            last_tue = get_last_tuesday_of_month(today.year, today.month)
+            if today > last_tue:
+                next_month = 1 if today.month == 12 else today.month + 1
+                next_year = today.year + 1 if today.month == 12 else today.year
+                last_tue = get_last_tuesday_of_month(next_year, next_month)
+            expiry_date = last_tue
+        else:
+            wd = today.weekday()
+            dte_days = 4.0 if wd == 0 else (3.0 if wd == 1 else (2.0 if wd == 2 else (1.0 if wd == 3 else 5.0)))
+            time_factor = math.sqrt(dte_days / 365.0)
+            return dte_days, time_factor
+
+    if today >= expiry_date:
+        dte_days = 0.5
+    else:
+        dte_days = float(count_trading_days(today, expiry_date))
 
     time_factor = math.sqrt(dte_days / 365.0)
     return dte_days, time_factor
@@ -863,18 +928,22 @@ def select_itm_contracts(
         raise ValueError(f"No matching contracts found for {option_type}")
 
     now_ist = datetime.now(IST)
+    today = now_ist.date()
     contracts_with_expiry = []
     for c in matching:
         try:
             exp_dt = to_ist_datetime(c.expiry)
-            if exp_dt.date() >= now_ist.date():
+            if exp_dt.date() >= today:
                 contracts_with_expiry.append((c, exp_dt.date()))
         except Exception:
             pass
 
     if contracts_with_expiry:
-        earliest_expiry = min(exp_dt_date for _, exp_dt_date in contracts_with_expiry)
-        matching = [c for c, exp_dt_date in contracts_with_expiry if exp_dt_date == earliest_expiry]
+        # Prefer near-term active expiries (within 45 days) to exclude far-dated LEAP contracts (e.g. 2027/2028)
+        near_term = [item for item in contracts_with_expiry if 0 <= (item[1] - today).days <= 45]
+        target_list = near_term if near_term else contracts_with_expiry
+        earliest_expiry = min(exp_dt_date for _, exp_dt_date in target_list)
+        matching = [c for c, exp_dt_date in target_list if exp_dt_date == earliest_expiry]
 
     # Deduplicate contracts by unique strike so we pick 3 distinct strike levels
     by_strike: dict[float, OptionContract] = {}
@@ -1763,11 +1832,25 @@ def build_epm_grid_and_contracts(
     if sl_offset is None:
         sl_offset = 12.0 if is_bn else 15.0
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        search_res = smart_api.searchScrip(exchange, search_symbol)
+    with suppress_stdout_stderr():
+        with contextlib.redirect_stdout(io.StringIO()):
+            search_res = smart_api.searchScrip(exchange, search_symbol)
     rows = search_res.get("data", []) if isinstance(search_res, dict) else []
+    if not isinstance(rows, list):
+        rows = []
 
     delta_map = load_delta_map()
+    if delta_map:
+        search_upper = search_symbol.upper()
+        existing_symbols = {str(r.get("tradingsymbol") or "").strip() for r in rows}
+        for sym, meta in delta_map.items():
+            if search_upper in sym.upper() and sym not in existing_symbols:
+                rows.append({
+                    "tradingsymbol": sym,
+                    "symboltoken": meta.get("symboltoken") or meta.get("token") or "0",
+                    "expiry": meta.get("expiry") or "",
+                    "strike": meta.get("strike"),
+                })
     contracts: list[OptionContract] = []
     month_map = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "O": 10, "N": 11, "D": 12, "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
 
@@ -1798,17 +1881,29 @@ def build_epm_grid_and_contracts(
             except Exception:
                 pass
 
+        m_ddmmmyy = re.search(r"(?:BSE|NSE)?(?:SENSEX|BANKNIFTY)(0[1-9]|[12][0-9]|3[01])([A-Za-z]{3})(\d{2})(\d{4,6})(CE|PE)$", symbol, re.IGNORECASE)
         m_sym = re.search(r"(?:BSE|NSE)?(?:SENSEX|BANKNIFTY)(\d{2})([A-Za-z]{3}|\d|[ONDond])(?:(0[1-9]|[12][0-9]|3[01]))?(\d{4,6})(CE|PE)$", symbol, re.IGNORECASE)
-        if m_sym:
+        if m_ddmmmyy:
+            dd_str, m_str, yy_str, str_val, _ = m_ddmmmyy.groups()
+            if not strike_val:
+                strike_val = float(str_val)
+            if not expiry_val:
+                m_num = month_map.get(m_str.upper(), 9)
+                expiry_val = f"20{yy_str}-{m_num:02d}-{int(dd_str):02d}"
+        elif m_sym:
             yy, m_str, dd, str_val, _ = m_sym.groups()
             if not strike_val:
                 strike_val = float(str_val)
             if not expiry_val:
-                m_num = month_map.get(m_str.upper(), 8)
+                m_num = month_map.get(m_str.upper(), 9)
                 if dd:
                     expiry_val = f"20{yy}-{m_num:02d}-{int(dd):02d}"
                 else:
-                    expiry_val = f"20{yy}-{m_num:02d}-28"
+                    if is_bn:
+                        last_tue = get_last_tuesday_of_month(2000 + int(yy), m_num)
+                        expiry_val = last_tue.strftime("%Y-%m-%d")
+                    else:
+                        expiry_val = f"20{yy}-{m_num:02d}-28"
         else:
             m_strike = re.search(r"(\d+)(?:CE|PE)$", symbol)
             if not m_strike:
@@ -1911,6 +2006,51 @@ def format_grid_notification(grid: EPMMasterGrid, title: str, spot_price: float,
         )
 
     return "\n".join(lines)
+
+
+def calculate_and_send_supplementary_grid(
+    smart_api: Any,
+    current_slot: str,
+    vix_val: float,
+    current_epm_buffer: float,
+    is_bn_bot: bool
+) -> tuple[EPMMasterGrid | None, float]:
+    """Calculate and log/send Telegram notification for the supplementary index (BANKNIFTY if main is SENSEX, or vice versa)."""
+    supp_index = "BANKNIFTY" if not is_bn_bot else "SENSEX"
+    supp_exch = "NSE" if not is_bn_bot else "BSE"
+    supp_sym = "Nifty Bank" if not is_bn_bot else "SENSEX"
+    supp_tok = "99926009" if not is_bn_bot else "99919000"
+    
+    try:
+        logger.info("📊 [SUPPLEMENTARY GRID] Calculating %s EPM Master Grid details...", supp_index)
+        s_spot_res = smart_api.ltpData(supp_exch, supp_sym, supp_tok)
+        if not isinstance(s_spot_res, dict) or not s_spot_res.get("data"):
+            # Fallback symbol lookup if Angel One API uses BANKNIFTY instead of Nifty Bank
+            s_spot_res = smart_api.ltpData(supp_exch, "BANKNIFTY" if not is_bn_bot else "SENSEX", supp_tok)
+            
+        s_spot = float(s_spot_res["data"]["ltp"]) if isinstance(s_spot_res, dict) and s_spot_res.get("data") else (51500.0 if not is_bn_bot else 77500.0)
+        s_open = float(s_spot_res["data"]["open"]) if isinstance(s_spot_res, dict) and s_spot_res.get("data") and s_spot_res["data"].get("open") else s_spot
+        
+        supp_grid, _, _ = build_epm_grid_and_contracts(smart_api, current_slot, s_spot, s_open, vix_val, buffer=current_epm_buffer, index_name=supp_index)
+        
+        logger.info("=========================================================================")
+        logger.info("%s EPM MASTER GRID INITIALIZED (Slot: %s IST)", supp_index, current_slot)
+        logger.info("Spot LTP: %.2f (Open: %.2f) | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", s_spot, s_open, vix_val, supp_grid.dte, supp_grid.index_move)
+        for idx, leg in enumerate(supp_grid.ce_legs or [supp_grid.ce_leg], 1):
+            exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
+            logger.info("CE Strike %d (ITM %d%s): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                        leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+        for idx, leg in enumerate(supp_grid.pe_legs or [supp_grid.pe_leg], 1):
+            exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
+            logger.info("PE Strike %d (ITM %d%s): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
+                        leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
+        logger.info("=========================================================================")
+        supp_msg = format_grid_notification(supp_grid, f"🔔 *{supp_index} MASTER GRID INITIALIZED*", s_spot, s_open, vix_val, supp_grid.dte, current_slot)
+        send_mobile_alert(supp_msg)
+        return supp_grid, s_spot
+    except Exception as exc:
+        logger.warning("Could not fetch supplementary %s grid: %s", supp_index, exc)
+        return None, 0.0
 
 
 def get_current_5m_candles(smart_api: Any, exchange: str, symbol_token: str) -> list:
@@ -2282,6 +2422,9 @@ def run_cloud_bot() -> None:
         
         flash_msg = format_grid_notification(grid, f"🔄 *RECALLED {target_index} MASTER GRID FROM MEMORY*", spot_price, spot_open, vix_val, dte_days, current_slot)
         send_mobile_alert(flash_msg)
+        
+        # Calculate & send supplementary index grid (e.g. BANKNIFTY) even when main grid is recalled
+        calculate_and_send_supplementary_grid(smart_api, current_slot, vix_val, current_epm_buffer, is_bn_bot)
     else:
         logger.info("=========================================================================")
         logger.info("%s CLOUD BOT - MASTER GRID INITIALIZED (Slot: %s IST)", target_index, current_slot)
@@ -2300,34 +2443,8 @@ def run_cloud_bot() -> None:
         msg = format_grid_notification(grid, f"🔔 *{target_index} MASTER GRID INITIALIZED*", spot_price, spot_open, vix_val, dte_days, current_slot)
         send_mobile_alert(msg)
 
-        # Also calculate & display supplementary BankNifty startup grid if main target is SENSEX (or SENSEX grid if main target is BANKNIFTY)
-        supp_index = "BANKNIFTY" if not is_bn_bot else "SENSEX"
-        supp_exch = "NSE" if not is_bn_bot else "BSE"
-        supp_sym = "BANKNIFTY" if not is_bn_bot else "SENSEX"
-        supp_tok = "99926009" if not is_bn_bot else "99919000"
-        try:
-            logger.info("📊 [STARTUP] Calculating supplementary %s EPM Master Grid details...", supp_index)
-            s_spot_res = smart_api.ltpData(supp_exch, supp_sym, supp_tok)
-            s_spot = float(s_spot_res["data"]["ltp"]) if isinstance(s_spot_res, dict) and s_spot_res.get("data") else (51500.0 if not is_bn_bot else 77500.0)
-            s_open = float(s_spot_res["data"]["open"]) if isinstance(s_spot_res, dict) and s_spot_res.get("data") and s_spot_res["data"].get("open") else s_spot
-            supp_grid, _, _ = build_epm_grid_and_contracts(smart_api, current_slot, s_spot, s_open, vix_val, buffer=current_epm_buffer, index_name=supp_index)
-            
-            logger.info("=========================================================================")
-            logger.info("%s EPM MASTER GRID INITIALIZED (Slot: %s IST)", supp_index, current_slot)
-            logger.info("Spot LTP: %.2f (Open: %.2f) | VIX: %.2f%% | DTE: %.2f | Move: ±%.2f", s_spot, s_open, vix_val, supp_grid.dte, supp_grid.index_move)
-            for idx, leg in enumerate(supp_grid.ce_legs or [supp_grid.ce_leg], 1):
-                exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
-                logger.info("CE Strike %d (ITM %d%s): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                            leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
-            for idx, leg in enumerate(supp_grid.pe_legs or [supp_grid.pe_leg], 1):
-                exp_info = f" | Exp: {leg.expiry}" if leg.expiry else ""
-                logger.info("PE Strike %d (ITM %d%s): Price ₹%.2f | Delta %.3f | Lower ₹%.2f | Upper ₹%.2f | SL ₹%.2f | Pr. ₹%.2f",
-                            leg.strike, idx, exp_info, leg.ltp, leg.delta, leg.epm_lower_range, leg.target_epm, leg.sl_auto, leg.practical_target)
-            logger.info("=========================================================================")
-            supp_msg = format_grid_notification(supp_grid, f"🔔 *{supp_index} MASTER GRID INITIALIZED*", s_spot, s_open, vix_val, supp_grid.dte, current_slot)
-            send_mobile_alert(supp_msg)
-        except Exception as exc:
-            logger.warning("Could not fetch supplementary %s startup grid: %s", supp_index, exc)
+        # Also calculate & display supplementary index startup grid (BANKNIFTY / SENSEX)
+        calculate_and_send_supplementary_grid(smart_api, current_slot, vix_val, current_epm_buffer, is_bn_bot)
 
         # Send Commands Cheat Sheet / Tips at 9:15 AM (Safe Markdown formatting)
         cheat_sheet_msg = (
@@ -2530,6 +2647,9 @@ def run_cloud_bot() -> None:
 
                     msg = format_grid_notification(grid, f"🔔 *{target_index} MASTER GRID UPDATED ({current_slot} Slot)*", spot_price, spot_open, vix_val, dte_days, current_slot)
                     send_mobile_alert(msg)
+
+                    # Also update and send supplementary index grid (BANKNIFTY / SENSEX) on slot transition
+                    calculate_and_send_supplementary_grid(smart_api, current_slot, vix_val, current_epm_buffer, is_bn_bot)
 
                     # Log to Excel
                     excel_tracker.add_signal({
