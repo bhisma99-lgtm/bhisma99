@@ -561,7 +561,7 @@ class LiveOrderExecutor:
     def __init__(
         self,
         smart_api_client: Any,
-        allow_live_orders: bool = False,
+        allow_live_orders: bool = True,
         environment_gate: str = "ANGEL_ONE_LIVE_TRADING_ENABLED",
     ) -> None:
         self._client = smart_api_client
