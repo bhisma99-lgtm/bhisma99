@@ -45,6 +45,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
           WHATSAPP_API_KEY: ${{ secrets.WHATSAPP_API_KEY }}
+          ANGEL_ONE_LIVE_TRADING_ENABLED: "True"
         run: |
           # Locate correct script target
           if [ -f "sbd_bot_cloud.py" ]; then
