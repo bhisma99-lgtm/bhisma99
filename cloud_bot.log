@@ -157,3 +157,72 @@ NameError: name 'prev_p_low_15m' is not defined
 2026-09-15 21:30:01,641 [INFO] Websocket connected
 2026-09-15 21:30:01,642 [INFO] 🟢 WebSocket Connection Opened successfully!
 2026-09-15 21:30:01,982 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-16 09:15:53,795 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-16 09:15:57,348 [INFO] 🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot 09:15 (SENSEX)...
+2026-09-16 09:16:08,908 [ERROR] ❌ CLOUD BOT EXECUTION ERROR: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/connectionpool.py", line 793, in urlopen
+    response = self._make_request(
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/connectionpool.py", line 540, in _make_request
+    response = conn.getresponse()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/connection.py", line 638, in getresponse
+    httplib_response = super().getresponse()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/http/client.py", line 1423, in getresponse
+    response.begin()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/http/client.py", line 330, in begin
+    version, status, reason = self._read_status()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/http/client.py", line 299, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/connectionpool.py", line 847, in urlopen
+    retries = retries.increment(
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/util/retry.py", line 510, in increment
+    raise reraise(type(error), error, _stacktrace)
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/connectionpool.py", line 793, in urlopen
+    response = self._make_request(
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/connectionpool.py", line 540, in _make_request
+    response = conn.getresponse()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/urllib3/connection.py", line 638, in getresponse
+    httplib_response = super().getresponse()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/http/client.py", line 1423, in getresponse
+    response.begin()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/http/client.py", line 330, in begin
+    version, status, reason = self._read_status()
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/http/client.py", line 299, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+urllib3.exceptions.ProtocolError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/work/bhisma99/bhisma99/.github/workflows/sbd_bot_cloud.py", line 4767, in <module>
+    run_cloud_bot()
+  File "/home/runner/work/bhisma99/bhisma99/.github/workflows/sbd_bot_cloud.py", line 2399, in run_cloud_bot
+    grid, ce_contracts, pe_contracts = build_epm_grid_and_contracts(smart_api, current_slot, spot_price, spot_open, vix_val, buffer=current_epm_buffer, index_name=target_index)
+  File "/home/runner/work/bhisma99/bhisma99/.github/workflows/sbd_bot_cloud.py", line 1948, in build_epm_grid_and_contracts
+    res = smart_api.ltpData(exchange, c.trading_symbol, c.symbol_token) if c.symbol_token != "0" else {}
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/SmartApi/smartConnect.py", line 378, in ltpData
+    ltpDataResponse= self._postRequest("api.ltp.data",params)
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/SmartApi/smartConnect.py", line 263, in _postRequest
+    return self._request(route, "POST", params)
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/SmartApi/smartConnect.py", line 222, in _request
+    raise e
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/SmartApi/smartConnect.py", line 210, in _request
+    r = requests.request(method,
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/requests/api.py", line 71, in request
+    return session.request(method=method, url=url, **kwargs)
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+  File "/opt/hostedtoolcache/Python/3.10.21/x64/lib/python3.10/site-packages/requests/adapters.py", line 711, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
