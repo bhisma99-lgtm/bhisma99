@@ -86,7 +86,7 @@ if os.name == "nt":
 ENABLE_IN_FLIGHT_HANDOVER: bool = True  # Dynamic in-flight strategy switching toggle (Default: True)
 MIN_EV_HANDOVER_DELTA: float = 4.0      # Minimum EV delta improvement (+4.0 pts) required to approve handover
 
-# Import Modular 3-Strategy Suite with Dynamic In-Flight Handover
+# Import Modular 4-Strategy Suite with Dynamic In-Flight Handover
 try:
     import state_machine_handover_engine as sm_engine
 except ImportError:
@@ -108,15 +108,18 @@ MFITrendReentryMBStrategy = getattr(sm_engine, "MFITrendReentryMBStrategy", None
 PostSLRecoveryReentryStrategy = getattr(sm_engine, "PostSLRecoveryReentryStrategy", None)
 PostBreakdownOversoldBounceStrategy = getattr(sm_engine, "PostBreakdownOversoldBounceStrategy", None)
 DynamicSwingLowBreakoutRetestStrategy = getattr(sm_engine, "DynamicSwingLowBreakoutRetestStrategy", None)
+TrendRidingMidBandStrategy = getattr(sm_engine, "TrendRidingMidBandStrategy", None)
 StateMachineHandoverEngine = getattr(sm_engine, "StateMachineHandoverEngine", None)
 
 
 def map_entry_type_to_strategy_name(entry_type_str: str) -> str:
-    """Map human-readable entry signal descriptions to standardized Strategy names in Modular 3-Strategy Suite."""
+    """Map human-readable entry signal descriptions to standardized Strategy names in Modular 4-Strategy Suite."""
     if not entry_type_str:
         return "Wick Absorption & Multi-TF Confluence Breakout Entry"
     if "Dynamic EPM" in entry_type_str or "EPM Low Bounce" in entry_type_str:
         return "Dynamic EPM Low Bounce LONG Entry"
+    elif "Trend riding" in entry_type_str or "Mid band" in entry_type_str or "Trend Riding" in entry_type_str:
+        return "Trend riding Mid band strategy"
     elif "Recovery" in entry_type_str or "Post-SL" in entry_type_str:
         return "One-Time Post-SL Recovery Re-Entry (+2 Lots)"
     elif "Swing Low" in entry_type_str or "SWING" in entry_type_str or "Retest" in entry_type_str:
@@ -642,19 +645,37 @@ def parse_angel_order_response(res: Any) -> tuple[str | None, str]:
     return None, str(res)
 
 
+def get_public_ip() -> str:
+    """Fetch real public IP dynamically from multiple reliable endpoints with robust fallback."""
+    import requests
+    endpoints = (
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+        "https://icanhazip.com",
+        "https://api.myip.com",
+    )
+    for url in endpoints:
+        try:
+            resp = requests.get(url, timeout=2.5)
+            if resp.status_code == 200 and resp.text.strip():
+                ip = resp.text.strip()
+                if "." in ip and len(ip) <= 45:
+                    return ip
+        except Exception:
+            continue
+    return "106.193.147.98"
+
+
 def reauthenticate_smartapi(smart_api: Any) -> bool:
     """Silently re-authenticates and refreshes JWT & Feed tokens if session expired or collided."""
     try:
         import pyotp
-        import requests
         req_keys = ("ANGEL_ONE_API_KEY", "ANGEL_ONE_CLIENT_CODE", "ANGEL_ONE_PASSWORD", "ANGEL_ONE_TOTP_SECRET")
         if any(not os.environ.get(k) for k in req_keys):
             return False
-        try:
-            pub_ip = requests.get("https://api.ipify.org", timeout=3.0).text.strip()
-        except Exception:
-            pub_ip = "117.97.214.136"
+        pub_ip = get_public_ip()
         smart_api.clientPublicIP = pub_ip
+        smart_api.clientLocalIP = pub_ip
         login_response = smart_api.generateSession(
             os.environ["ANGEL_ONE_CLIENT_CODE"],
             os.environ["ANGEL_ONE_PASSWORD"],
@@ -663,7 +684,7 @@ def reauthenticate_smartapi(smart_api: Any) -> bool:
         if isinstance(login_response, dict) and login_response.get("status") is True and login_response.get("data"):
             smart_api.feed_token = login_response["data"].get("feedToken")
             smart_api.auth_token = login_response["data"].get("jwtToken")
-            logger.info("🔄 [AUTH RECOVERY] Successfully re-authenticated SmartAPI session in-flight.")
+            logger.info("🔄 [AUTH RECOVERY] Successfully re-authenticated SmartAPI session in-flight (IP: %s).", pub_ip)
             return True
     except Exception as exc:
         logger.warning("⚠️ Re-authentication attempt failed: %s", exc)
@@ -671,8 +692,12 @@ def reauthenticate_smartapi(smart_api: Any) -> bool:
 
 
 def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
-    """Submit real Market Order to Angel One SmartAPI with product type fallback, auto-reauth, and robust error handling."""
+    """Submit real Market Order to Angel One SmartAPI with product type fallback, auto-IP assignment, auto-reauth, and robust error handling."""
     qty_val = max(1, int(quantity))
+    pub_ip = get_public_ip()
+    if smart_api:
+        smart_api.clientPublicIP = pub_ip
+        smart_api.clientLocalIP = pub_ip
     for attempt in range(1, 3):
         for product_type in ("INTRADAY", "CARRYFORWARD"):
             try:
@@ -989,17 +1014,13 @@ def create_authenticated_smartapi_client() -> Any:
         raise RuntimeError("Missing Angel One secret(s): " + ", ".join(missing))
 
     import pyotp
-    import requests
     from SmartApi import SmartConnect
 
-    try:
-        pub_ip = requests.get("https://api.ipify.org", timeout=3.0).text.strip()
-    except Exception:
-        pub_ip = "106.222.189.166"
+    pub_ip = get_public_ip()
 
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
     smart_api.clientPublicIP = pub_ip
-    smart_api.clientLocalIP = "127.0.0.1"
+    smart_api.clientLocalIP = pub_ip
     login_response = smart_api.generateSession(
         os.environ["ANGEL_ONE_CLIENT_CODE"],
         os.environ["ANGEL_ONE_PASSWORD"],
@@ -1107,6 +1128,24 @@ class LiveWSFeed:
 
 
 _last_api_call_time = 0.0
+
+def safe_ltp_data(smart_api: Any, exchange: str, trading_symbol: str, symbol_token: str, max_retries: int = 5) -> dict | None:
+    """Fetch LTP data from SmartAPI with exponential backoff retry and connection recovery.
+    Prevents ConnectionAborted / RemoteDisconnected errors from crashing the bot during live market hours.
+    """
+    if smart_api is None or not callable(getattr(smart_api, "ltpData", None)):
+        return None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = smart_api.ltpData(exchange, trading_symbol, symbol_token)
+            if isinstance(res, dict) and res.get("status") is True and res.get("data"):
+                return res
+        except Exception as exc:
+            logger.warning("⚠️ SmartAPI ltpData exception for %s (attempt %d/%d): %s", trading_symbol, attempt, max_retries, exc)
+            time.sleep(0.4 * attempt)
+
+    return None
 
 def safe_get_candle_data(smart_api: Any, params: dict, max_retries: int = 5) -> dict | None:
     """Fetch candle data from SmartAPI with global rate limiting and exponential backoff retry.
@@ -1945,7 +1984,7 @@ def build_epm_grid_and_contracts(
 
     ce_legs_data = []
     for c in ce_contracts:
-        res = smart_api.ltpData(exchange, c.trading_symbol, c.symbol_token) if c.symbol_token != "0" else {}
+        res = safe_ltp_data(smart_api, exchange, c.trading_symbol, c.symbol_token) if c.symbol_token != "0" else {}
         ltp = float(res["data"]["ltp"]) if isinstance(res, dict) and res.get("data") else 500.0
         c_open = float(res["data"]["open"]) if isinstance(res, dict) and res.get("data") and res["data"].get("open") else ltp
         price_to_use = c_open if current_slot == "09:15" else ltp
@@ -1953,7 +1992,7 @@ def build_epm_grid_and_contracts(
 
     pe_legs_data = []
     for p in pe_contracts:
-        res = smart_api.ltpData(exchange, p.trading_symbol, p.symbol_token) if p.symbol_token != "0" else {}
+        res = safe_ltp_data(smart_api, exchange, p.trading_symbol, p.symbol_token) if p.symbol_token != "0" else {}
         ltp = float(res["data"]["ltp"]) if isinstance(res, dict) and res.get("data") else 300.0
         p_open = float(res["data"]["open"]) if isinstance(res, dict) and res.get("data") and res["data"].get("open") else ltp
         price_to_use = p_open if current_slot == "09:15" else ltp
@@ -2098,6 +2137,10 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
     Supports product type fallback (INTRADAY / CARRYFORWARD) and auto session recovery.
     """
     qty_val = max(1, int(quantity))
+    pub_ip = get_public_ip()
+    if smart_api:
+        smart_api.clientPublicIP = pub_ip
+        smart_api.clientLocalIP = pub_ip
     
     for attempt in range(1, 3):
         # 1. Try Market Sell Order with product type fallback
@@ -2540,11 +2583,12 @@ def run_cloud_bot() -> None:
     loop_counter = 0
     is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
 
-    # Instantiate Modular 3-Strategy Suite with Dynamic In-Flight Handover
+    # Instantiate Modular 4-Strategy Suite with Dynamic In-Flight Handover
     handover_strategies = [
         PreviousHighBreakoutMomentumStrategy(),
         PostSLRecoveryReentryStrategy(),
         DynamicSwingLowBreakoutRetestStrategy(),
+        TrendRidingMidBandStrategy(),
     ]
     handover_engine = StateMachineHandoverEngine(strategies=handover_strategies, min_ev_improvement=MIN_EV_HANDOVER_DELTA)
 
@@ -3232,10 +3276,34 @@ def run_cloud_bot() -> None:
                                         is_post_breakdown_entry_ce = False
                                         is_swing_low_retest_entry_ce = False
 
-                                # --- Dynamic EPM Low Bounce LONG Entry Signal (CE) ---
+                                 # --- Dynamic EPM Low Bounce LONG Entry Signal (CE) ---
                                 ce_epm_low_saved = load_grid_state_epm_low("CE")
                                 if ce_epm_low_saved is None or ce_epm_low_saved <= 0:
                                     ce_epm_low_saved = grid.ce_leg.epm_lower_range if (grid and grid.ce_leg) else 0.0
+
+                                # --- Trend riding Mid band strategy Entry Signal (CE) ---
+                                is_trend_riding_ce = False
+                                if TrendRidingMidBandStrategy is not None:
+                                    tr_strat_ce = TrendRidingMidBandStrategy()
+                                    ctx_tr_ce = MarketContext(
+                                        timestamp=now_time_str, open=c_open_15m or live_ce_ltp, high=live_ce_ltp, low=c_low_15m or live_ce_ltp,
+                                        close=live_ce_ltp, volume=1.0, mfi5_15m=mfi5_15m, mfi14_15m=mfi14_15m, prev_mfi5_15m=prev_mfi5_15m,
+                                        prev_mfi14_15m=prev_mfi14_15m, mfi5_30m=mfi5_30m, mfi14_30m=mfi14_30m, prev_mfi5_30m=prev_mfi5_30m,
+                                        prev_mfi14_30m=prev_mfi14_30m, prev_prev_mfi14_30m=prev_prev_mfi14_30m, mfi5_60m=mfi5_60m, mfi14_60m=mfi14_60m,
+                                        prev_mfi5_60m=prev_mfi5_60m, prev_mfi14_60m=prev_mfi14_60m, mfi5_3m=mfi5_3m, mfi14_3m=mfi14_3m,
+                                        prev_mfi5_3m=prev_mfi5_3m, prev_mfi14_3m=prev_mfi14_3m, prev_prev_mfi5_3m=50.0, prev_prev_mfi14_3m=50.0,
+                                        mb_3m=mb_3m_ce or live_ce_ltp, ub_3m=ub_3m_ce or live_ce_ltp, lb_3m=lb_3m_ce or live_ce_ltp,
+                                        prev_mb_20=live_ce_ltp, prev_prev_mb_20=live_ce_ltp, prev_mb_3m=live_ce_ltp, prev_prev_mb_3m=live_ce_ltp,
+                                        mb_20=c_open_15m or live_ce_ltp, ub_20=grid.ce_leg.target_epm, lb_20=grid.ce_leg.epm_lower_range,
+                                        prev_high=previous_ce_high, prev_low=recent_ce_low, prev_close=c_open_15m or live_ce_ltp,
+                                        recent_swing_low=recent_ce_low, recent_swing_high=previous_ce_high, dynamic_tolerance=5.0,
+                                        is_0915_bar=is_915_opening, is_big_gap_up=is_ce_big_gap_up, allow_reentry=allow_reentry_live,
+                                        recovery_eligible=recovery_reentry_eligible, initial_entry_done=initial_entry_happened
+                                    )
+                                    setattr(ctx_tr_ce, "confluence_score", conf_score_ce if 'conf_score_ce' in locals() else 65)
+                                    tr_sig_ce = tr_strat_ce.evaluate_entry(ctx_tr_ce)
+                                    if tr_sig_ce and live_spot >= spot_open:
+                                        is_trend_riding_ce = True
 
                                 atr14_ce, stddev20_ce = calculate_atr_and_stddev(smart_api, getattr(ce_contract, "exchange", "BFO"), ce_contract.symbol_token)
                                 dynamic_near_thresh_ce = calculate_dynamic_epm_proximity_threshold(
@@ -3302,6 +3370,12 @@ def run_cloud_bot() -> None:
                                             "pnl_amount": 0.0,
                                             "status": "ALERT_ONLY_NO_TRADE"
                                         })
+                                    elif is_trend_riding_ce:
+                                        ce_entry_signal = True
+                                        initial_entry_happened = True
+                                        lot_size = base_lot_size
+                                        active_sl_ce = live_ce_ltp - 20.0
+                                        entry_type_str_ce = f"CE Trend riding Mid band strategy (Score: {conf_score_ce}/100 | SL-20)"
                                     elif is_direction_aligned_ce and is_clean_initial_entry_ce:
                                         ce_entry_signal = True
                                         initial_entry_happened = True

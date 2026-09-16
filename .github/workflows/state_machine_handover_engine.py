@@ -1,12 +1,13 @@
 """
-Modular 3-Strategy Suite with Dynamic In-Flight Handover.
+Modular 4-Strategy Suite with Dynamic In-Flight Handover.
 
 This production-grade module implements:
 1. Multi-Timeframe Feature Matrix Normalization (15m, 30m, 1h, 3m).
-2. Modular 3-Strategy Suite Architecture:
+2. Modular 4-Strategy Suite Architecture:
    - Strategy 1: Previous High Breakout Momentum Entry
    - Strategy 2: One-Time Post-SL Recovery Re-Entry (+2 Lots)
    - Strategy 3: Dynamic Swing Low Breakout Retest Entry (with MFI(14) Rising Hold & Upper BB Rejection Exit)
+   - Strategy 4: Trend Riding Mid Band Strategy (Below MB Entry, Multi-TF 3m/30m or 5m/1h Confluence, Trail to Cost-5 & Prev Candle Low-2)
 3. 4-State Machine Matrix:
    - State 0: Flat / Scanning
    - State 1: Active Long
@@ -98,6 +99,8 @@ class Position:
     mfi14_overbought_reached: bool = False
     last_swing_high_price: float = 0.0
     last_swing_high_mfi14: float = 0.0
+    entry_30m_both_rising: bool = False
+    entry_15m_both_rising: bool = False
 
 
 @dataclass
@@ -234,6 +237,23 @@ class BaseStrategy(ABC):
         """Default trailing SL logic maintaining the non-widening global risk invariant."""
         return position.current_sl
 
+    def check_dual_mfi_rising_hold(self, ctx: MarketContext, position: Position) -> bool:
+        """Requirement #1: If 15m or 30m MFI rising upon signal generation, hold till respective timeframe MFI falls."""
+        e_30m_rising = getattr(position, "entry_30m_both_rising", False) or position.metadata.get("entry_30m_both_rising", False)
+        e_15m_rising = getattr(position, "entry_15m_both_rising", False) or position.metadata.get("entry_15m_both_rising", False)
+
+        if e_30m_rising:
+            both_30m_falling = (ctx.mfi5_30m < ctx.prev_mfi5_30m and ctx.mfi14_30m < ctx.prev_mfi14_30m)
+            if not both_30m_falling:
+                return True
+
+        if e_15m_rising:
+            both_15m_falling = (ctx.mfi5_15m < ctx.prev_mfi5_15m and ctx.mfi14_15m < ctx.prev_mfi14_15m)
+            if not both_15m_falling:
+                return True
+
+        return False
+
 
 # =====================================================================
 # 4. CONCRETE STRATEGY IMPLEMENTATIONS (7 CORE STRATEGIES)
@@ -340,6 +360,9 @@ class WickAbsorptionMultiTFConfluenceBreakoutStrategy(BaseStrategy):
         return None
 
     def evaluate_exit(self, ctx: MarketContext, position: Position) -> ExitSignal:
+        if self.check_dual_mfi_rising_hold(ctx, position):
+            return ExitSignal(False, ctx.close, "")
+
         mb_15m_curr = ctx.mb_20
         mb_15m_prev = getattr(ctx, "prev_mb_20", mb_15m_curr)
         mb_15m_prev2 = getattr(ctx, "prev_prev_mb_20", mb_15m_prev)
@@ -567,6 +590,9 @@ class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
         return None
 
     def evaluate_exit(self, ctx: MarketContext, position: Position) -> ExitSignal:
+        if self.check_dual_mfi_rising_hold(ctx, position):
+            return ExitSignal(False, ctx.close, "Holding - 15m/30m Dual MFI rising hold active")
+
         # 3m Upper BB / MFI Profit Booking Exit Logic (Exact User Specification)
         curr_mfi5_3m = ctx.mfi5_3m if ctx.mfi5_3m > 0 else ctx.mfi5_15m
         prev_mfi5_3m = ctx.prev_mfi5_3m if ctx.prev_mfi5_3m > 0 else ctx.prev_mfi5_15m
@@ -669,6 +695,118 @@ class DynamicSwingLowBreakoutRetestStrategy(BaseStrategy):
         adjusted_win_rate = min(0.92, max(0.20, self.base_win_rate * mfi_momentum))
         loss_rate = 1.0 - adjusted_win_rate
         return float((adjusted_win_rate * dist_to_target) - (loss_rate * dist_to_sl))
+
+
+class TrendRidingMidBandStrategy(BaseStrategy):
+    """Strategy 4: Trend Riding Mid Band Strategy.
+    Enters below Middle Band when Spot is aligned with Open Price (>= Open for CE, <= Open for PE).
+    Supports price/MFI bounce near Lower Band OR oversold MFI bounce with Multi-TF confirmation (3m/30m or 5m/1h)
+    and Confluence score > 60.
+    Exit when price reaches Upper Band or higher TF MFI falls.
+    Trailing SL Exception: Trail to cost - 5 after 50 pts move, and trail to 'previous candle low - 2' post 50 pts.
+    """
+
+    def __init__(self):
+        super().__init__("Trend riding Mid band strategy", base_win_rate=0.73, base_rr=2.6)
+
+    def evaluate_entry(self, ctx: MarketContext) -> Optional[EntrySignal]:
+        # Condition 1: Enter below Mid Band
+        is_below_mb = (ctx.close < ctx.mb_20) or (ctx.low <= ctx.mb_20)
+        if not is_below_mb:
+            return None
+
+        # Setup A: Price and MFI bouncing near Lower Band
+        is_near_lb = (ctx.close <= ctx.lb_20 + 8.0) or (ctx.low <= ctx.lb_20 + 8.0)
+        is_lb_mfi_bouncing = (ctx.mfi5_15m > ctx.prev_mfi5_15m) or (ctx.mfi14_15m > ctx.prev_mfi14_15m)
+        setup_a = is_near_lb and is_lb_mfi_bouncing
+
+        # Setup B: Both MFI oversold and bouncing
+        is_oversold = (ctx.mfi5_15m <= 25.0 or ctx.mfi14_15m <= 30.0)
+        is_mfi_bouncing = (ctx.mfi5_15m > ctx.prev_mfi5_15m) and (ctx.mfi14_15m >= ctx.prev_mfi14_15m)
+        setup_b = is_oversold and is_mfi_bouncing
+
+        # Multi-Timeframe Alignment Confirmation:
+        # Pair 1: 3min MFI with 30min MFI (Higher TF 30m MFI increasing -> 3m MFI rising near oversold or price rising near lower BB 3m)
+        htf_30m_increasing = (ctx.mfi14_30m > ctx.prev_mfi14_30m) or (ctx.mfi5_30m > ctx.prev_mfi5_30m)
+        ltf_3m_rising_oversold = (ctx.mfi5_3m <= 35.0 or ctx.prev_mfi5_3m <= 35.0 or ctx.mfi14_3m <= 35.0) and (ctx.mfi5_3m > ctx.prev_mfi5_3m or ctx.mfi14_3m > ctx.prev_mfi14_3m)
+        ltf_3m_near_lb_rising = (ctx.lb_3m > 0 and ctx.low <= ctx.lb_3m + 5.0) and (ctx.close >= ctx.open)
+        pair1_align = htf_30m_increasing and (ltf_3m_rising_oversold or ltf_3m_near_lb_rising)
+
+        # Pair 2: 5min/15min MFI with 1 hour MFI (Higher TF 60m MFI increasing -> 5m/15m MFI rising near oversold or price rising near lower BB 15m)
+        htf_60m_increasing = (ctx.mfi14_60m > ctx.prev_mfi14_60m) or (ctx.mfi5_60m > ctx.prev_mfi5_60m)
+        ltf_5m_rising_oversold = (ctx.mfi5_15m <= 35.0 or ctx.mfi14_15m <= 35.0) and (ctx.mfi5_15m > ctx.prev_mfi5_15m or ctx.mfi14_15m > ctx.prev_mfi14_15m)
+        ltf_5m_near_lb_rising = (ctx.low <= ctx.lb_20 + 5.0) and (ctx.close >= ctx.open)
+        pair2_align = htf_60m_increasing and (ltf_5m_rising_oversold or ltf_5m_near_lb_rising)
+
+        mtf_confirmation = pair1_align or pair2_align
+
+        # Confluence Score check > 60
+        conf_score = getattr(ctx, "confluence_score", 65)
+        is_conf_ok = (conf_score > 60)
+
+        if is_below_mb and (setup_a or setup_b) and mtf_confirmation and is_conf_ok:
+            entry_price = ctx.close
+            sl = entry_price - 20.0  # Global SL Parity
+            target = max(ctx.ub_20, entry_price + 60.0)
+            return EntrySignal(
+                strategy_name=self.name,
+                side=PositionSide.LONG,
+                entry_price=entry_price,
+                initial_sl=sl,
+                target_price=target,
+                reason=f"Trend Riding Mid Band Entry (Setup: {'LB Bounce' if setup_a else 'Oversold Bounce'}, Conf Score: {conf_score})",
+                metadata={
+                    "entry_30m_both_rising": (ctx.mfi5_30m > ctx.prev_mfi5_30m and ctx.mfi14_30m > ctx.prev_mfi14_30m),
+                    "entry_15m_both_rising": (ctx.mfi5_15m > ctx.prev_mfi5_15m and ctx.mfi14_15m > ctx.prev_mfi14_15m),
+                }
+            )
+        return None
+
+    def evaluate_exit(self, ctx: MarketContext, position: Position) -> ExitSignal:
+        # Requirement #1 Hold Rule Check:
+        # If both 30m / 15m MFIs rising at entry -> hold till respective timeframe MFIs fall together
+        if self.check_dual_mfi_rising_hold(ctx, position):
+            return ExitSignal(False, ctx.close, "Holding position as 15m/30m dual MFI is still rising")
+
+        # Strategy Exit: Price fall near upper band OR MFI fall in respective higher timeframe
+        near_ub = (ctx.high >= ctx.ub_20 - 3.0 or ctx.close >= ctx.ub_20 - 3.0 or position.peak_price >= ctx.ub_20 - 3.0)
+        both_15m_falling = (ctx.mfi5_15m < ctx.prev_mfi5_15m and ctx.mfi14_15m < ctx.prev_mfi14_15m)
+        both_30m_falling = (ctx.mfi5_30m < ctx.prev_mfi5_30m and ctx.mfi14_30m < ctx.prev_mfi14_30m)
+        htf_mfi_falling = (ctx.mfi14_30m < ctx.prev_mfi14_30m) or (ctx.mfi14_60m < ctx.prev_mfi14_60m) or both_15m_falling or both_30m_falling
+
+        if near_ub or htf_mfi_falling:
+            return ExitSignal(True, ctx.close, f"Trend Riding Exit ({'Price near Upper Band' if near_ub else 'HTF MFI Fall'})")
+
+        return ExitSignal(False, ctx.close, "")
+
+    def calculate_trailing_sl(self, ctx: MarketContext, position: Position) -> float:
+        """
+        Custom Trailing SL Exception for Trend Riding Mid Band strategy:
+        - Global SL initially.
+        - Trail to cost - 5 after 50 points move.
+        - Trail to 'previous candle low - 2' for each 10 points move post 50 points.
+        """
+        favorable_gain = position.peak_price - position.entry_price if position.side == PositionSide.LONG else position.entry_price - position.peak_price
+        sl = position.current_sl
+
+        if favorable_gain >= 50.0:
+            # Base trail at 50 pts move: cost - 5
+            cost_minus_5 = position.entry_price - 5.0 if position.side == PositionSide.LONG else position.entry_price + 5.0
+            sl = max(sl, cost_minus_5)
+
+            # Post 50 pts move: trail to previous candle low - 2
+            prev_candle_low = ctx.prev_low if ctx.prev_low > 0 else position.entry_price
+            candle_trail_sl = prev_candle_low - 2.0 if position.side == PositionSide.LONG else ctx.prev_high + 2.0
+            sl = max(sl, candle_trail_sl)
+
+            # Additional locking per 10 points post 50 pts
+            pts_over_50 = favorable_gain - 50.0
+            ten_pt_steps = int(pts_over_50 // 10.0)
+            if ten_pt_steps > 0:
+                locked_profit_sl = (position.entry_price - 5.0 + (ten_pt_steps * 10.0)) if position.side == PositionSide.LONG else (position.entry_price + 5.0 - (ten_pt_steps * 10.0))
+                sl = max(sl, locked_profit_sl)
+
+        return sl
 
 
 # =====================================================================
@@ -986,11 +1124,12 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
     df['prev_prev_mfi5_3m'] = df['prev_prev_mfi5_3m'].fillna(df['prev_mfi5'])
     df['prev_prev_mfi14_3m'] = df['prev_prev_mfi14_3m'].fillna(df['prev_mfi14'])
 
-    # Instantiate the Modular 3-Strategy Suite
+    # Instantiate the Modular 4-Strategy Suite
     strategies = [
         PreviousHighBreakoutMomentumStrategy(),
         PostSLRecoveryReentryStrategy(),
         DynamicSwingLowBreakoutRetestStrategy(),
+        TrendRidingMidBandStrategy(),
     ]
 
     engine = StateMachineHandoverEngine(strategies=strategies, min_ev_improvement=3.5)
@@ -1105,4 +1244,4 @@ def run_state_machine_backtest(df_15m: pd.DataFrame, df_30m: Optional[pd.DataFra
 
 
 if __name__ == "__main__":
-    print("🚀 [MODULAR 3-STRATEGY SUITE WITH DYNAMIC IN-FLIGHT HANDOVER] Initialized successfully with 3 Core Strategies.")
+    print("🚀 [MODULAR 4-STRATEGY SUITE WITH DYNAMIC IN-FLIGHT HANDOVER] Initialized successfully with 4 Core Strategies.")
