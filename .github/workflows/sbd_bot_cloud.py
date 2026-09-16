@@ -675,7 +675,7 @@ def reauthenticate_smartapi(smart_api: Any) -> bool:
             return False
         pub_ip = get_public_ip()
         smart_api.clientPublicIP = pub_ip
-        smart_api.clientLocalIP = pub_ip
+        smart_api.clientLocalIP = "127.0.0.1"
         login_response = smart_api.generateSession(
             os.environ["ANGEL_ONE_CLIENT_CODE"],
             os.environ["ANGEL_ONE_PASSWORD"],
@@ -697,7 +697,7 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
     pub_ip = get_public_ip()
     if smart_api:
         smart_api.clientPublicIP = pub_ip
-        smart_api.clientLocalIP = pub_ip
+        smart_api.clientLocalIP = "127.0.0.1"
 
     if not exchange:
         sym_str = str(trading_symbol).upper()
@@ -1027,7 +1027,7 @@ def create_authenticated_smartapi_client() -> Any:
 
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
     smart_api.clientPublicIP = pub_ip
-    smart_api.clientLocalIP = pub_ip
+    smart_api.clientLocalIP = "127.0.0.1"
     login_response = smart_api.generateSession(
         os.environ["ANGEL_ONE_CLIENT_CODE"],
         os.environ["ANGEL_ONE_PASSWORD"],
@@ -2147,7 +2147,7 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
     pub_ip = get_public_ip()
     if smart_api:
         smart_api.clientPublicIP = pub_ip
-        smart_api.clientLocalIP = pub_ip
+        smart_api.clientLocalIP = "127.0.0.1"
 
     if not exchange:
         sym_str = str(trading_symbol).upper()
@@ -3767,7 +3767,8 @@ def run_cloud_bot() -> None:
                                                   f"Contract: *{active_contract.trading_symbol}*\n"
                                                   f"Entry Price: ₹{active_entry_price:.2f}\n"
                                                   f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
-                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)\n"
+                                                  f"Trades: {trades_completed + 1}/{max_trades_per_day}")
                                 
                                 if execution_mode == "LIVE":
                                     submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
@@ -3835,7 +3836,8 @@ def run_cloud_bot() -> None:
                                                   f"Contract: *{active_contract.trading_symbol}*\n"
                                                   f"Entry Price: ₹{active_entry_price:.2f}\n"
                                                   f"Stop Loss: ₹{active_sl:.2f} | Target: ₹{active_target:.2f}\n"
-                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)")
+                                                  f"Mode: *{execution_mode}* | Lot Size: *{lot_size}* ({qty_to_trade} Qty)\n"
+                                                  f"Trades: {trades_completed + 1}/{max_trades_per_day}")
                                 
                                 if execution_mode == "LIVE":
                                     submit_angel_order(smart_api, active_contract.trading_symbol, active_contract.symbol_token, "BUY", qty_to_trade)
