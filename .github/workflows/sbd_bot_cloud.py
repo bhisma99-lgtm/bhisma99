@@ -691,22 +691,27 @@ def reauthenticate_smartapi(smart_api: Any) -> bool:
     return False
 
 
-def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10) -> Any:
-    """Submit real Market Order to Angel One SmartAPI with product type fallback, auto-IP assignment, auto-reauth, and robust error handling."""
+def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10, exchange: str | None = None) -> Any:
+    """Submit real Market Order to Angel One SmartAPI with dynamic exchange detection (NFO/BFO), product type fallback, auto-IP assignment, auto-reauth, and robust error handling."""
     qty_val = max(1, int(quantity))
     pub_ip = get_public_ip()
     if smart_api:
         smart_api.clientPublicIP = pub_ip
         smart_api.clientLocalIP = pub_ip
+
+    if not exchange:
+        sym_str = str(trading_symbol).upper()
+        exchange = "NFO" if ("BANKNIFTY" in sym_str or "NIFTY" in sym_str or "FINNIFTY" in sym_str) else "BFO"
+
     for attempt in range(1, 3):
-        for product_type in ("INTRADAY", "CARRYFORWARD"):
+        for product_type in ("CARRYFORWARD", "INTRADAY", "MARGIN"):
             try:
                 order_params = {
                     "variety": "NORMAL",
                     "tradingsymbol": str(trading_symbol).strip(),
                     "symboltoken": str(symbol_token).strip(),
                     "transactiontype": transaction_type.upper(),
-                    "exchange": "BFO",
+                    "exchange": exchange,
                     "ordertype": "MARKET",
                     "producttype": product_type,
                     "duration": "DAY",
@@ -718,11 +723,11 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
                 res = smart_api.placeOrder(order_params)
                 order_id, err_msg = parse_angel_order_response(res)
                 if order_id:
-                    logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s (%s) | Order ID: %s", transaction_type, qty_val, trading_symbol, product_type, order_id)
-                    send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}*\nQuantity: *{qty_val}*\nOrder ID: `{order_id}`")
+                    logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s (%s, %s) | Order ID: %s", transaction_type, qty_val, trading_symbol, exchange, product_type, order_id)
+                    send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}* ({exchange})\nQuantity: *{qty_val}*\nOrder ID: `{order_id}`")
                     return order_id
                 else:
-                    logger.warning("⚠️ SmartAPI Order rejected with producttype=%s: %s", product_type, err_msg)
+                    logger.warning("⚠️ SmartAPI Order rejected (%s, producttype=%s): %s", exchange, product_type, err_msg)
                     err_lower = err_msg.lower()
                     if any(kw in err_lower for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
                         logger.info("🔄 Session token error detected during order placement. Triggering instant re-auth...")
@@ -730,13 +735,13 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
                         break  # Retry loop with refreshed credentials
             except Exception as exc:
                 exc_str = str(exc)
-                logger.warning("⚠️ Exception submitting order with producttype=%s: %s", product_type, exc)
+                logger.warning("⚠️ Exception submitting order (%s, producttype=%s): %s", exchange, product_type, exc)
                 if any(kw in exc_str.lower() for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
                     reauthenticate_smartapi(smart_api)
                     break
     
-    logger.error("❌ Real Order Submission Failed for %s %d %s", transaction_type, qty_val, trading_symbol)
-    send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol}. Check Angel One account permissions.")
+    logger.error("❌ Real Order Submission Failed for %s %d %s (%s)", transaction_type, qty_val, trading_symbol, exchange)
+    send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol} ({exchange}). Check Angel One account permissions.")
     return None
 
 
@@ -2133,27 +2138,31 @@ def check_active_position_qty(smart_api: Any, symbol_token: str) -> int | None:
     return None
 
 
-def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str, quantity: int, ltp: float) -> Any:
+def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str, quantity: int, ltp: float, exchange: str | None = None) -> Any:
     """Submit a MARKET sell order first. If it fails, immediately place a LIMIT sell order
     at a lower price (LTP - 10 points) to guarantee immediate execution as a marketable limit order.
-    Supports product type fallback (INTRADAY / CARRYFORWARD) and auto session recovery.
+    Supports dynamic exchange detection (NFO/BFO), product type fallback (CARRYFORWARD / INTRADAY / MARGIN), and auto session recovery.
     """
     qty_val = max(1, int(quantity))
     pub_ip = get_public_ip()
     if smart_api:
         smart_api.clientPublicIP = pub_ip
         smart_api.clientLocalIP = pub_ip
+
+    if not exchange:
+        sym_str = str(trading_symbol).upper()
+        exchange = "NFO" if ("BANKNIFTY" in sym_str or "NIFTY" in sym_str or "FINNIFTY" in sym_str) else "BFO"
     
     for attempt in range(1, 3):
         # 1. Try Market Sell Order with product type fallback
-        for product_type in ("INTRADAY", "CARRYFORWARD"):
+        for product_type in ("CARRYFORWARD", "INTRADAY", "MARGIN"):
             try:
                 order_params = {
                     "variety": "NORMAL",
                     "tradingsymbol": str(trading_symbol).strip(),
                     "symboltoken": str(symbol_token).strip(),
                     "transactiontype": "SELL",
-                    "exchange": "BFO",
+                    "exchange": exchange,
                     "ordertype": "MARKET",
                     "producttype": product_type,
                     "duration": "DAY",
@@ -2165,11 +2174,11 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
                 res = smart_api.placeOrder(order_params)
                 order_id, err_msg = parse_angel_order_response(res)
                 if order_id:
-                    logger.info("⚡ [MARKET SELL ORDER SUCCESS] (%s) | Order ID: %s", product_type, order_id)
-                    send_mobile_alert(f"🔴 *SELL ORDER EXECUTED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nOrder ID: `{order_id}`")
+                    logger.info("⚡ [MARKET SELL ORDER SUCCESS] (%s, %s) | Order ID: %s", exchange, product_type, order_id)
+                    send_mobile_alert(f"🔴 *SELL ORDER EXECUTED*\nContract: *{trading_symbol}* ({exchange})\nQty: *{qty_val}*\nOrder ID: `{order_id}`")
                     return order_id
                 else:
-                    logger.warning("⚠️ Market sell rejected with producttype=%s: %s", product_type, err_msg)
+                    logger.warning("⚠️ Market sell rejected (%s, producttype=%s): %s", exchange, product_type, err_msg)
                     err_lower = err_msg.lower()
                     if any(kw in err_lower for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
                         logger.info("🔄 Session token error on sell. Triggering instant re-auth...")
@@ -2177,7 +2186,7 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
                         break
             except Exception as exc:
                 exc_str = str(exc)
-                logger.warning("⚠️ Exception on market sell with producttype=%s: %s", product_type, exc)
+                logger.warning("⚠️ Exception on market sell (%s, producttype=%s): %s", exchange, product_type, exc)
                 if any(kw in exc_str.lower() for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
                     reauthenticate_smartapi(smart_api)
                     break
@@ -2186,14 +2195,14 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
         limit_price = max(2.0, float(ltp) - 10.0)
         limit_price_str = f"{limit_price:.2f}"
         
-        for product_type in ("INTRADAY", "CARRYFORWARD"):
+        for product_type in ("CARRYFORWARD", "INTRADAY", "MARGIN"):
             try:
                 order_params = {
                     "variety": "NORMAL",
                     "tradingsymbol": str(trading_symbol).strip(),
                     "symboltoken": str(symbol_token).strip(),
                     "transactiontype": "SELL",
-                    "exchange": "BFO",
+                    "exchange": exchange,
                     "ordertype": "LIMIT",
                     "producttype": product_type,
                     "duration": "DAY",
@@ -2205,13 +2214,13 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
                 res = smart_api.placeOrder(order_params)
                 order_id, err_msg = parse_angel_order_response(res)
                 if order_id:
-                    logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] (%s) Price: %s | Order ID: %s", product_type, limit_price_str, order_id)
-                    send_mobile_alert(f"🔴 *FAILSAFE LIMIT SELL PLACED*\nContract: *{trading_symbol}*\nQty: *{qty_val}*\nPrice: ₹{limit_price_str}\nOrder ID: `{order_id}`")
+                    logger.info("⚡ [FAILSAFE LIMIT SELL ORDER PLACED] (%s, %s) Price: %s | Order ID: %s", exchange, product_type, limit_price_str, order_id)
+                    send_mobile_alert(f"🔴 *FAILSAFE LIMIT SELL PLACED*\nContract: *{trading_symbol}* ({exchange})\nQty: *{qty_val}*\nPrice: ₹{limit_price_str}\nOrder ID: `{order_id}`")
                     return order_id
                 else:
-                    logger.warning("⚠️ Limit sell rejected with producttype=%s: %s", product_type, err_msg)
+                    logger.warning("⚠️ Limit sell rejected (%s, producttype=%s): %s", exchange, product_type, err_msg)
             except Exception as exc:
-                logger.warning("⚠️ Exception on limit sell with producttype=%s: %s", product_type, exc)
+                logger.warning("⚠️ Exception on limit sell (%s, producttype=%s): %s", exchange, product_type, exc)
             
     logger.error("❌ Failsafe Sell Failed for %s %d Qty", trading_symbol, qty_val)
     send_mobile_alert(f"⚠️ *CRITICAL: SELL ORDER FAILED*\nCould not execute sell for {trading_symbol}. Please close manually!")
