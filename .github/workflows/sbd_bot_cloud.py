@@ -985,16 +985,18 @@ def select_itm_contracts(
     atm_strike = round(spot / strike_step) * strike_step
 
     if option_type == "CE":
-        # Strictly ITM for CE: strike < spot (e.g. for spot 76810: 76700, 76600, 76500)
-        itm = sorted([c for c in unique_contracts if c.strike < spot], key=lambda c: c.strike, reverse=True)
+        # Strictly ITM for CE: strike < atm_strike and strike < spot (e.g. for spot 76810, atm 76800: ITM strikes are 76700, 76600, 76500)
+        itm = sorted([c for c in unique_contracts if c.strike < atm_strike and c.strike < spot], key=lambda c: c.strike, reverse=True)
         if not itm:
-            itm = sorted([c for c in unique_contracts if c.strike <= spot + 100.0], key=lambda c: c.strike, reverse=True)
+            # Fallback: select contracts with lowest available strikes (closest to ITM)
+            itm = sorted(unique_contracts, key=lambda c: c.strike)
         return itm[:count]
     else:
-        # Strictly ITM for PE: strike > spot (e.g. for spot 76810: 76900, 77000, 77100)
-        itm = sorted([c for c in unique_contracts if c.strike > spot], key=lambda c: c.strike)
+        # Strictly ITM for PE: strike > atm_strike and strike > spot (e.g. for spot 76810, atm 76800: ITM strikes are 76900, 77000, 77100)
+        itm = sorted([c for c in unique_contracts if c.strike > atm_strike and c.strike > spot], key=lambda c: c.strike)
         if not itm:
-            itm = sorted([c for c in unique_contracts if c.strike >= spot - 100.0], key=lambda c: c.strike)
+            # Fallback: select contracts with highest available strikes (closest to ITM)
+            itm = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
         return itm[:count]
 
 
