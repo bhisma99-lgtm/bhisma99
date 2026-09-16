@@ -101,7 +101,7 @@ class StrategyConfig:
     candle_lookback_bars: int = 120
     poll_interval_seconds: float = 1.0
     quantity: int = 1
-    paper_mode: bool = True
+    paper_mode: bool = False
 
     def __post_init__(self) -> None:
         if self.timeframe not in VALID_TIMEFRAMES:
