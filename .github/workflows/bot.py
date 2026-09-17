@@ -101,7 +101,7 @@ class StrategyConfig:
     candle_lookback_bars: int = 120
     poll_interval_seconds: float = 1.0
     quantity: int = 1
-    paper_mode: bool = False
+    paper_mode: bool = True
 
     def __post_init__(self) -> None:
         if self.timeframe not in VALID_TIMEFRAMES:
@@ -213,11 +213,39 @@ class SmartApiMarketData:
         trading_symbol: str,
         symbol_token: str,
     ) -> float:
-        response = self._client.ltpData(
-            exchange,
-            trading_symbol,
-            symbol_token,
-        )
+        max_retries = 3
+        response = None
+        for attempt in range(1, max_retries + 1):
+            start_time = time.time()
+            try:
+                response = self._client.ltpData(
+                    exchange,
+                    trading_symbol,
+                    symbol_token,
+                )
+                elapsed = time.time() - start_time
+                if elapsed > 3.0:
+                    logger.warning("⏱️ High latency detected in ltpData for %s: %.2fs", trading_symbol, elapsed)
+                break
+            except Exception as exc:
+                elapsed = time.time() - start_time
+                logger.warning(
+                    "⚠️ SmartAPI ltpData exception for %s (attempt %d/%d after %.2fs): %s",
+                    trading_symbol,
+                    attempt,
+                    max_retries,
+                    elapsed,
+                    exc,
+                )
+                if attempt == max_retries:
+                    logger.error(
+                        "❌ SmartAPI ltpData failed after %d attempts for %s",
+                        max_retries,
+                        trading_symbol,
+                    )
+                    raise
+                time.sleep(0.5 * attempt)
+
         data = self._require_response_data(response, "ltpData")
         try:
             ltp = float(data["ltp"])
@@ -318,8 +346,12 @@ class SmartApiMarketData:
         }
         response = None
         for attempt in range(1, max_retries + 1):
+            start_t = time.time()
             try:
                 response = self._client.getCandleData(payload)
+                elapsed = time.time() - start_t
+                if elapsed > 3.0:
+                    logging.warning("⏱️ High latency in getCandleData for token %s (attempt %d): %.2fs", symbol_token, attempt, elapsed)
                 if isinstance(response, dict):
                     err_code = str(response.get("errorcode") or "")
                     msg = str(response.get("message") or "").lower()
@@ -330,6 +362,15 @@ class SmartApiMarketData:
                         continue
                 break
             except Exception as exc:
+                elapsed = time.time() - start_t
+                logging.warning(
+                    "⚠️ getCandleData request exception for token %s (attempt %d/%d after %.2fs): %s",
+                    symbol_token,
+                    attempt,
+                    max_retries,
+                    elapsed,
+                    exc,
+                )
                 if attempt == max_retries:
                     raise RuntimeError(
                         f"SmartAPI getCandleData request failed after {max_retries} attempts: {exc}"
@@ -437,6 +478,7 @@ def create_authenticated_smartapi_client() -> Any:
         ) from exc
 
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
+    smart_api.timeout = 15
     login_response = smart_api.generateSession(
         os.environ["ANGEL_ONE_CLIENT_CODE"],
         os.environ["ANGEL_ONE_PASSWORD"],
@@ -495,12 +537,12 @@ def select_nearest_itm_contract(
     atm_strike = round(spot / strike_step) * strike_step
 
     if option_type == "CE":
-        itm = [contract for contract in matching if contract.strike < atm_strike and contract.strike <= spot]
+        itm = [contract for contract in matching if contract.strike < atm_strike and contract.strike < spot]
         if not itm:
-            return max(matching, key=lambda contract: contract.strike)
+            return min(matching, key=lambda contract: contract.strike)
         return max(itm, key=lambda contract: contract.strike)
 
-    itm = [contract for contract in matching if contract.strike > atm_strike]
+    itm = [contract for contract in matching if contract.strike > atm_strike and contract.strike > spot]
     if not itm:
         return max(matching, key=lambda contract: contract.strike)
     return min(itm, key=lambda contract: contract.strike)
@@ -561,7 +603,7 @@ class LiveOrderExecutor:
     def __init__(
         self,
         smart_api_client: Any,
-        allow_live_orders: bool = True,
+        allow_live_orders: bool = False,
         environment_gate: str = "ANGEL_ONE_LIVE_TRADING_ENABLED",
     ) -> None:
         self._client = smart_api_client
