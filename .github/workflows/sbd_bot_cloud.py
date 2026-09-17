@@ -647,23 +647,26 @@ def parse_angel_order_response(res: Any) -> tuple[str | None, str]:
 
 def get_public_ip() -> str:
     """Fetch real public IP dynamically from multiple reliable endpoints with robust fallback."""
+    if os.environ.get("FORCE_PUBLIC_IP"):
+        return os.environ["FORCE_PUBLIC_IP"].strip()
     import requests
     endpoints = (
+        "https://checkip.amazonaws.com",
         "https://api.ipify.org",
+        "https://ipinfo.io/ip",
         "https://ifconfig.me/ip",
         "https://icanhazip.com",
-        "https://api.myip.com",
     )
     for url in endpoints:
         try:
-            resp = requests.get(url, timeout=2.5)
+            resp = requests.get(url, timeout=5.0)
             if resp.status_code == 200 and resp.text.strip():
-                ip = resp.text.strip()
+                ip = resp.text.strip().split()[0]
                 if "." in ip and len(ip) <= 45:
                     return ip
         except Exception:
             continue
-    return "106.193.147.98"
+    return "52.159.226.3"
 
 
 def reauthenticate_smartapi(smart_api: Any) -> bool:
@@ -674,7 +677,9 @@ def reauthenticate_smartapi(smart_api: Any) -> bool:
         if any(not os.environ.get(k) for k in req_keys):
             return False
         pub_ip = get_public_ip()
+        smart_api.clientPublicIp = pub_ip
         smart_api.clientPublicIP = pub_ip
+        smart_api.clientLocalIp = "127.0.0.1"
         smart_api.clientLocalIP = "127.0.0.1"
         login_response = smart_api.generateSession(
             os.environ["ANGEL_ONE_CLIENT_CODE"],
@@ -696,7 +701,9 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
     qty_val = max(1, int(quantity))
     pub_ip = get_public_ip()
     if smart_api:
+        smart_api.clientPublicIp = pub_ip
         smart_api.clientPublicIP = pub_ip
+        smart_api.clientLocalIp = "127.0.0.1"
         smart_api.clientLocalIP = "127.0.0.1"
 
     if not exchange:
@@ -1027,7 +1034,9 @@ def create_authenticated_smartapi_client() -> Any:
 
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
     smart_api.timeout = 15
+    smart_api.clientPublicIp = pub_ip
     smart_api.clientPublicIP = pub_ip
+    smart_api.clientLocalIp = "127.0.0.1"
     smart_api.clientLocalIP = "127.0.0.1"
     login_response = smart_api.generateSession(
         os.environ["ANGEL_ONE_CLIENT_CODE"],
@@ -2147,7 +2156,9 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
     qty_val = max(1, int(quantity))
     pub_ip = get_public_ip()
     if smart_api:
+        smart_api.clientPublicIp = pub_ip
         smart_api.clientPublicIP = pub_ip
+        smart_api.clientLocalIp = "127.0.0.1"
         smart_api.clientLocalIP = "127.0.0.1"
 
     if not exchange:
