@@ -353,3 +353,85 @@ requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected(
 2026-09-16 14:20:22,769 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774400PE has been closed manually on broker. Resetting bot state to IDLE.
 2026-09-16 14:20:23,396 [INFO] 📱 Telegram push notification sent successfully.
 2026-09-16 14:20:23,413 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 09:16:00,737 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-17 09:16:05,388 [INFO] 🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot 09:15 (SENSEX)...
+2026-09-17 09:16:20,490 [WARNING] ⚠️ SmartAPI ltpData exception for SENSEX2691774000CE (attempt 1/5): HTTPSConnectionPool(host='apiconnect.angelone.in', port=443): Read timed out. (read timeout=7)
+2026-09-17 09:16:23,830 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 09:16:23,830 [INFO] =========================================================================
+2026-09-17 09:16:23,830 [INFO] SENSEX CLOUD BOT - MASTER GRID INITIALIZED (Slot: 09:15 IST)
+2026-09-17 09:16:23,830 [INFO] Spot LTP: 74259.61 (Open: 74182.62) | VIX: 12.90% | DTE: 0.50 | Move: ±354.19
+2026-09-17 09:16:23,830 [INFO] CE Strike 74200 (ITM 1 | Exp: 2026-09-17): Price ₹247.40 | Delta 0.576 | Lower ₹220.90 | Upper ₹273.90 | SL ₹205.90 | Pr. ₹290.21
+2026-09-17 09:16:23,830 [INFO] CE Strike 74100 (ITM 2 | Exp: 2026-09-17): Price ₹310.00 | Delta 0.682 | Lower ₹278.60 | Upper ₹341.40 | SL ₹263.60 | Pr. ₹360.72
+2026-09-17 09:16:23,830 [INFO] CE Strike 74000 (ITM 3 | Exp: 2026-09-17): Price ₹367.00 | Delta 0.775 | Lower ₹331.31 | Upper ₹402.69 | SL ₹316.31 | Pr. ₹424.66
+2026-09-17 09:16:23,830 [INFO] PE Strike 74400 (ITM 1 | Exp: 2026-09-17): Price ₹355.45 | Delta 0.645 | Lower ₹325.73 | Upper ₹385.17 | SL ₹310.73 | Pr. ₹403.46
+2026-09-17 09:16:23,830 [INFO] PE Strike 74500 (ITM 2 | Exp: 2026-09-17): Price ₹310.20 | Delta 0.744 | Lower ₹275.96 | Upper ₹344.44 | SL ₹260.96 | Pr. ₹365.51
+2026-09-17 09:16:23,830 [INFO] PE Strike 74600 (ITM 3 | Exp: 2026-09-17): Price ₹509.40 | Delta 0.825 | Lower ₹471.40 | Upper ₹547.40 | SL ₹456.40 | Pr. ₹570.78
+2026-09-17 09:16:23,830 [INFO] =========================================================================
+2026-09-17 09:16:30,589 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 09:16:31,150 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 09:16:31,150 [INFO] 📊 [SUPPLEMENTARY GRID] Calculating BANKNIFTY EPM Master Grid details...
+2026-09-17 09:16:48,173 [WARNING] ⚠️ SmartAPI ltpData exception for BANKNIFTY29SEP2656300PE (attempt 1/5): HTTPSConnectionPool(host='apiconnect.angelone.in', port=443): Read timed out. (read timeout=7)
+2026-09-17 09:16:52,326 [WARNING] ⚠️ SmartAPI ltpData exception for BANKNIFTY29SEP2656500PE (attempt 1/5): ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-09-17 09:16:53,500 [INFO] =========================================================================
+2026-09-17 09:16:53,500 [INFO] BANKNIFTY EPM MASTER GRID INITIALIZED (Slot: 09:15 IST)
+2026-09-17 09:16:53,500 [INFO] Spot LTP: 56181.90 (Open: 56126.60) | VIX: 12.90% | DTE: 8.00 | Move: ±1071.91
+2026-09-17 09:16:53,500 [INFO] CE Strike 56100 (ITM 1 | Exp: 2026-09-29): Price ₹800.00 | Delta 0.566 | Lower ₹721.13 | Upper ₹878.87 | SL ₹709.13 | Pr. ₹927.41
+2026-09-17 09:16:53,500 [INFO] CE Strike 56000 (ITM 2 | Exp: 2026-09-29): Price ₹818.90 | Delta 0.602 | Lower ₹734.95 | Upper ₹902.85 | SL ₹722.95 | Pr. ₹954.51
+2026-09-17 09:16:53,500 [INFO] CE Strike 55900 (ITM 3 | Exp: 2026-09-29): Price ₹865.95 | Delta 0.638 | Lower ₹777.04 | Upper ₹954.86 | SL ₹765.04 | Pr. ₹1009.58
+2026-09-17 09:16:53,500 [INFO] PE Strike 56300 (ITM 1 | Exp: 2026-09-29): Price ₹601.00 | Delta 0.508 | Lower ₹530.21 | Upper ₹671.79 | SL ₹518.21 | Pr. ₹715.35
+2026-09-17 09:16:53,500 [INFO] PE Strike 56400 (ITM 2 | Exp: 2026-09-29): Price ₹900.00 | Delta 0.545 | Lower ₹824.06 | Upper ₹975.94 | SL ₹812.06 | Pr. ₹1022.68
+2026-09-17 09:16:53,500 [INFO] PE Strike 56500 (ITM 3 | Exp: 2026-09-29): Price ₹663.30 | Delta 0.582 | Lower ₹582.27 | Upper ₹744.33 | SL ₹570.27 | Pr. ₹794.20
+2026-09-17 09:16:53,500 [INFO] =========================================================================
+2026-09-17 09:16:58,541 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 09:16:59,085 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 09:16:59,613 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 09:16:59,632 [INFO] ⚡ Background WebSocket Feed initialized.
+2026-09-17 09:16:59,632 [INFO] 🔄 Entering continuous monitoring loop (Mode: PAPER, Refreshing 1s in-place)...
+2026-09-17 09:17:00,682 [INFO] Websocket connected
+2026-09-17 09:17:00,683 [INFO] 🟢 WebSocket Connection Opened successfully!
+2026-09-17 09:17:23,517 [INFO] [09:17:00] [PAPER] IDLE | Trades: 0/2 | Spot: 74275.72 | CE: ₹260.65 | PE: ₹258.40
+2026-09-17 09:17:32,847 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:20:39,165 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:20:48,447 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:23:33,067 [INFO] ⚙️ [TELEGRAM] Max Trades Limit manually updated to 3.
+2026-09-17 09:23:33,583 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 09:35:21,543 [INFO] ⚠️ [MODE SWITCH] Switched to REAL LIVE TRADING MODE via Telegram (Lot Size: 4).
+2026-09-17 09:35:22,056 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 09:37:47,385 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:42:51,452 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:42:58,082 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:45:13,916 [INFO] ⏰ [SLOT TRANSITION] Time slot changed from 09:15 to 09:45
+2026-09-17 09:45:15,424 [INFO] 🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for transitioned slot 09:45 (SENSEX)...
+2026-09-17 09:45:22,396 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 09:45:22,396 [INFO] =========================================================================
+2026-09-17 09:45:22,396 [INFO] SENSEX CLOUD BOT - MASTER GRID TRANSITIONED
+2026-09-17 09:45:22,397 [INFO] Spot LTP: 74390.30 | VIX: 12.71% | DTE: 0.50 | Move: ±349.95
+2026-09-17 09:45:22,397 [INFO] CE Strike 74300 (ITM 1 | Exp: 2026-09-17): LTP/Open ₹245.90 | Delta 0.611 | Lower ₹218.12 | Upper ₹273.68 | SL ₹203.12 | Pr. ₹290.77
+2026-09-17 09:45:22,397 [INFO] CE Strike 74200 (ITM 2 | Exp: 2026-09-17): LTP/Open ₹309.10 | Delta 0.715 | Lower ₹276.59 | Upper ₹341.61 | SL ₹261.59 | Pr. ₹361.62
+2026-09-17 09:45:22,397 [INFO] CE Strike 74100 (ITM 3 | Exp: 2026-09-17): LTP/Open ₹380.20 | Delta 0.803 | Lower ₹343.65 | Upper ₹416.75 | SL ₹328.65 | Pr. ₹439.24
+2026-09-17 09:45:22,397 [INFO] PE Strike 74500 (ITM 1 | Exp: 2026-09-17): LTP/Open ₹264.40 | Delta 0.614 | Lower ₹236.45 | Upper ₹292.35 | SL ₹221.45 | Pr. ₹309.54
+2026-09-17 09:45:22,397 [INFO] PE Strike 74600 (ITM 2 | Exp: 2026-09-17): LTP/Open ₹335.30 | Delta 0.718 | Lower ₹302.66 | Upper ₹367.94 | SL ₹287.66 | Pr. ₹388.03
+2026-09-17 09:45:22,397 [INFO] PE Strike 74700 (ITM 3 | Exp: 2026-09-17): LTP/Open ₹408.60 | Delta 0.805 | Lower ₹371.97 | Upper ₹445.23 | SL ₹356.97 | Pr. ₹467.77
+2026-09-17 09:45:22,397 [INFO] =========================================================================
+2026-09-17 09:45:28,032 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 09:45:28,564 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 09:45:28,564 [INFO] 📊 [SUPPLEMENTARY GRID] Calculating BANKNIFTY EPM Master Grid details...
+2026-09-17 09:45:36,799 [INFO] =========================================================================
+2026-09-17 09:45:36,799 [INFO] BANKNIFTY EPM MASTER GRID INITIALIZED (Slot: 09:45 IST)
+2026-09-17 09:45:36,799 [INFO] Spot LTP: 56415.85 (Open: 56126.60) | VIX: 12.71% | DTE: 8.00 | Move: ±1061.56
+2026-09-17 09:45:36,799 [INFO] CE Strike 56300 (ITM 1 | Exp: 2026-09-29): Price ₹738.20 | Delta 0.579 | Lower ₹658.25 | Upper ₹818.15 | SL ₹646.25 | Pr. ₹867.35
+2026-09-17 09:45:36,799 [INFO] CE Strike 56200 (ITM 2 | Exp: 2026-09-29): Price ₹800.55 | Delta 0.616 | Lower ₹715.56 | Upper ₹885.54 | SL ₹703.56 | Pr. ₹937.85
+2026-09-17 09:45:36,799 [INFO] CE Strike 56100 (ITM 3 | Exp: 2026-09-29): Price ₹866.05 | Delta 0.651 | Lower ₹776.14 | Upper ₹955.96 | SL ₹764.14 | Pr. ₹1011.28
+2026-09-17 09:45:36,800 [INFO] PE Strike 56500 (ITM 1 | Exp: 2026-09-29): Price ₹538.70 | Delta 0.495 | Lower ₹470.34 | Upper ₹607.06 | SL ₹458.34 | Pr. ₹649.12
+2026-09-17 09:45:36,800 [INFO] PE Strike 56600 (ITM 2 | Exp: 2026-09-29): Price ₹584.95 | Delta 0.533 | Lower ₹511.43 | Upper ₹658.47 | SL ₹499.43 | Pr. ₹703.72
+2026-09-17 09:45:36,800 [INFO] PE Strike 56700 (ITM 3 | Exp: 2026-09-29): Price ₹629.45 | Delta 0.570 | Lower ₹550.81 | Upper ₹708.09 | SL ₹538.81 | Pr. ₹756.49
+2026-09-17 09:45:36,800 [INFO] =========================================================================
+2026-09-17 09:45:41,759 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 09:45:42,303 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 09:45:42,319 [INFO] 🔌 Closing old WebSocket feed and restarting with new slot tokens...
+2026-09-17 09:45:42,320 [INFO] ⚡ Background WebSocket Feed re-initialized for slot 09:45.
+2026-09-17 09:45:44,083 [INFO] Websocket connected
+2026-09-17 09:45:44,084 [INFO] 🟢 WebSocket Connection Opened successfully!
+2026-09-17 09:50:30,998 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:50:40,294 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 09:57:46,214 [INFO] [09:57:05] [LIVE] IDLE | Trades: 0/3 | Spot: 74437.54 | CE: ₹268.20 | PE: ₹236.50
