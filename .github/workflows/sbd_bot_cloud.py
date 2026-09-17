@@ -711,7 +711,7 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
         exchange = "NFO" if ("BANKNIFTY" in sym_str or "NIFTY" in sym_str or "FINNIFTY" in sym_str) else "BFO"
 
     for attempt in range(1, 3):
-        for product_type in ("CARRYFORWARD", "INTRADAY", "MARGIN"):
+        for product_type in ("CARRYFORWARD", "INTRADAY", "DELIVERY", "MARGIN"):
             try:
                 order_params = {
                     "variety": "NORMAL",
@@ -736,6 +736,11 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
                 else:
                     logger.warning("⚠️ SmartAPI Order rejected (%s, producttype=%s): %s", exchange, product_type, err_msg)
                     err_lower = err_msg.lower()
+                    if "not a registered ip" in err_lower or "ag7002" in err_lower:
+                        logger.error("🚨 [ANGEL ONE IP ERROR AG7002] Public IP %s is not registered in Angel Portal.", pub_ip)
+                        send_mobile_alert(f"⚠️ *ANGEL ONE IP AUTHORIZATION ERROR (AG7002)*\n"
+                                          f"Public IP `{pub_ip}` is not registered in Angel One Developer Portal.\n"
+                                          f"👉 Action: Please whitelist IP `{pub_ip}` in your API Key settings in Angel Portal.")
                     if any(kw in err_lower for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
                         logger.info("🔄 Session token error detected during order placement. Triggering instant re-auth...")
                         reauthenticate_smartapi(smart_api)
@@ -997,18 +1002,18 @@ def select_itm_contracts(
     atm_strike = round(spot / strike_step) * strike_step
 
     if option_type == "CE":
-        # Strictly ITM for CE: strike < atm_strike and strike < spot (e.g. for spot 76810, atm 76800: ITM strikes are 76700, 76600, 76500)
-        itm = sorted([c for c in unique_contracts if c.strike < atm_strike and c.strike < spot], key=lambda c: c.strike, reverse=True)
+        # Strictly ITM for CE: strike <= spot (e.g. for spot 74510, ITM strikes are 74400, 74300, 74200)
+        itm = sorted([c for c in unique_contracts if c.strike <= spot or c.strike <= atm_strike], key=lambda c: c.strike, reverse=True)
         if not itm:
-            # Fallback: select contracts with lowest available strikes (closest to ITM)
-            itm = sorted(unique_contracts, key=lambda c: c.strike)
+            # Fallback: select contracts with strikes below spot ordered descending (closest to ITM)
+            itm = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
         return itm[:count]
     else:
-        # Strictly ITM for PE: strike > atm_strike and strike > spot (e.g. for spot 76810, atm 76800: ITM strikes are 76900, 77000, 77100)
-        itm = sorted([c for c in unique_contracts if c.strike > atm_strike and c.strike > spot], key=lambda c: c.strike)
+        # Strictly ITM for PE: strike >= spot (e.g. for spot 74510, ITM strikes are 74600, 74700, 74800)
+        itm = sorted([c for c in unique_contracts if c.strike >= spot or c.strike >= atm_strike], key=lambda c: c.strike)
         if not itm:
-            # Fallback: select contracts with highest available strikes (closest to ITM)
-            itm = sorted(unique_contracts, key=lambda c: c.strike, reverse=True)
+            # Fallback: select contracts with strikes above spot ordered ascending (closest to ITM)
+            itm = sorted(unique_contracts, key=lambda c: c.strike)
         return itm[:count]
 
 
@@ -2166,8 +2171,8 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
         exchange = "NFO" if ("BANKNIFTY" in sym_str or "NIFTY" in sym_str or "FINNIFTY" in sym_str) else "BFO"
     
     for attempt in range(1, 3):
-        # 1. Try Market Sell Order with product type fallback
-        for product_type in ("CARRYFORWARD", "INTRADAY", "MARGIN"):
+        # 1. Try Market Sell Order with product type fallback (CARRYFORWARD first)
+        for product_type in ("CARRYFORWARD", "INTRADAY", "DELIVERY", "MARGIN"):
             try:
                 order_params = {
                     "variety": "NORMAL",
@@ -2207,7 +2212,7 @@ def execute_failsafe_sell(smart_api: Any, trading_symbol: str, symbol_token: str
         limit_price = max(2.0, float(ltp) - 10.0)
         limit_price_str = f"{limit_price:.2f}"
         
-        for product_type in ("CARRYFORWARD", "INTRADAY", "MARGIN"):
+        for product_type in ("CARRYFORWARD", "INTRADAY", "DELIVERY", "MARGIN"):
             try:
                 order_params = {
                     "variety": "NORMAL",
@@ -2987,16 +2992,28 @@ def run_cloud_bot() -> None:
                                           f"Position for *{active_contract.trading_symbol}* was closed manually on your broker app.\n"
                                           f"Resetting bot state to *IDLE*.")
                         
-                        # Log manual exit to Excel Tracker
-                        excel_tracker.add_order({
+                        # Log manual exit to Excel Tracker (both order & signal sheets for full accuracy tracking)
+                        manual_exit_price = live_ce_ltp if bot_state == "CE_LONG" else live_pe_ltp
+                        manual_entry_price = active_entry_price if active_entry_price > 0 else manual_exit_price
+                        manual_pnl_pts = round(manual_exit_price - manual_entry_price, 2)
+                        manual_record = {
                             "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                            "mode": "LIVE",
+                            "mode": execution_mode,
                             "state": "MANUAL_EXIT",
                             "trading_symbol": active_contract.trading_symbol,
-                            "price": live_ce_ltp if bot_state == "CE_LONG" else live_pe_ltp,
+                            "strategy": active_strategy_name or "Manual Broker Exit",
+                            "entry_price": round(manual_entry_price, 2),
+                            "exit_price": round(manual_exit_price, 2),
+                            "sl_price": round(active_sl, 2) if active_sl > 0 else 0.0,
+                            "target_price": round(active_target, 2) if active_target > 0 else 0.0,
+                            "pnl_pts": manual_pnl_pts,
+                            "price": round(manual_exit_price, 2),
                             "qty": lot_size * 20,
-                            "trades_count": trades_completed + 1
-                        })
+                            "trades_count": trades_completed + 1,
+                            "outcome": "PROFIT" if manual_pnl_pts > 0 else "LOSS"
+                        }
+                        excel_tracker.add_order(manual_record)
+                        excel_tracker.add_signal(manual_record)
                         
                         bot_state = "IDLE"
                         active_contract = None
@@ -3102,11 +3119,10 @@ def run_cloud_bot() -> None:
                                 is_30m_overbought_falling_ce = (mfi5_30m >= 90.0 or prev_mfi5_30m >= 90.0) and (mfi5_30m < prev_mfi5_30m)
                                 higher_tf_block_ce = is_60m_both_falling_ce or is_30m_overbought_falling_ce
                                 
-                                # 15m MFI Pattern for Initial Entry:
-                                # Previous MFI(5) was strictly 0.0 and currently bouncing (> 0.0) + MFI(14) <= 25.0 rising
-                                is_mfi5_zero_bounce_ce = (prev_mfi5_15m == 0.0 and mfi5_15m > 0.0) or (mfi5_15m == 0.0)
-                                is_mfi14_bounce_ce = (mfi14_15m <= 25.0) and (mfi14_15m >= prev_mfi14_15m)
-                                is_initial_mfi_pattern_ce = is_mfi5_zero_bounce_ce and is_mfi14_bounce_ce
+                                # 15m MFI Pattern for Initial Entry (Dynamic MFI(5)=0 / Bounce & MFI(14) Higher Low Structure - No Hardcoding):
+                                is_mfi5_zero_bounce_ce = (mfi5_15m == 0.0) or (prev_mfi5_15m == 0.0 and mfi5_15m > prev_mfi5_15m)
+                                is_mfi14_higher_low_ce = (mfi14_15m > prev_mfi14_15m) or (mfi14_15m >= prev_mfi14_15m and mfi5_15m > prev_mfi5_15m)
+                                is_initial_mfi_pattern_ce = is_mfi5_zero_bounce_ce and is_mfi14_higher_low_ce
                                 
                                 # Reverse Oversold Exception: If Spot < Weekly Open but CE is extremely oversold in 15m and 30m
                                 is_dual_oversold_ce = (mfi5_30m == 0.0 and mfi14_30m <= 25.0)
@@ -3464,11 +3480,10 @@ def run_cloud_bot() -> None:
                                 is_30m_overbought_falling_pe = (mfi5_30m_pe >= 90.0 or prev_mfi5_30m_pe >= 90.0) and (mfi5_30m_pe < prev_mfi5_30m_pe)
                                 higher_tf_block_pe = is_60m_both_falling_pe or is_30m_overbought_falling_pe
 
-                                # 15m MFI Pattern for Initial Entry:
-                                # Previous MFI(5) was strictly 0.0 and currently bouncing (> 0.0) + MFI(14) <= 25.0 rising
-                                is_mfi5_zero_bounce_pe = (prev_mfi5_15m_pe == 0.0 and mfi5_15m_pe > 0.0) or (mfi5_15m_pe == 0.0)
-                                is_mfi14_bounce_pe = (mfi14_15m_pe <= 25.0) and (mfi14_15m_pe >= prev_mfi14_15m_pe)
-                                is_initial_mfi_pattern_pe = is_mfi5_zero_bounce_pe and is_mfi14_bounce_pe
+                                # 15m MFI Pattern for Initial Entry PE (Dynamic MFI(5)=0 / Bounce & MFI(14) Higher Low Structure - No Hardcoding):
+                                is_mfi5_zero_bounce_pe = (mfi5_15m_pe == 0.0) or (prev_mfi5_15m_pe == 0.0 and mfi5_15m_pe > prev_mfi5_15m_pe)
+                                is_mfi14_higher_low_pe = (mfi14_15m_pe > prev_mfi14_15m_pe) or (mfi14_15m_pe >= prev_mfi14_15m_pe and mfi5_15m_pe > prev_mfi5_15m_pe)
+                                is_initial_mfi_pattern_pe = is_mfi5_zero_bounce_pe and is_mfi14_higher_low_pe
 
                                 # Reverse Oversold Exception: If Spot > Weekly Open but PE is extremely oversold in 15m and 30m
                                 is_dual_oversold_pe = (mfi5_30m_pe == 0.0 and mfi14_30m_pe <= 25.0)
@@ -4843,10 +4858,13 @@ def run_cloud_bot() -> None:
                 else:
                     state_info = "IDLE"
                     
+                ce_strk_lbl = f"CE {int(ce_contract.strike)}" if ce_contract else "CE"
+                pe_strk_lbl = f"PE {int(pe_contract.strike)}" if pe_contract else "PE"
+
                 status_line = (
                     f"[{checked_at.strftime('%H:%M:%S')}] [{execution_mode}] {state_info} | "
                     f"Trades: {trades_completed}/{max_trades_per_day} | Spot: {live_spot:.2f} | "
-                    f"CE: ₹{live_ce_ltp:.2f} | PE: ₹{live_pe_ltp:.2f}"
+                    f"{ce_strk_lbl}: ₹{live_ce_ltp:.2f} | {pe_strk_lbl}: ₹{live_pe_ltp:.2f}"
                 )
 
                 if is_github_actions:
