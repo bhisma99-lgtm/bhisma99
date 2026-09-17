@@ -1026,6 +1026,7 @@ def create_authenticated_smartapi_client() -> Any:
     pub_ip = get_public_ip()
 
     smart_api = SmartConnect(api_key=os.environ["ANGEL_ONE_API_KEY"])
+    smart_api.timeout = 15
     smart_api.clientPublicIP = pub_ip
     smart_api.clientLocalIP = "127.0.0.1"
     login_response = smart_api.generateSession(
