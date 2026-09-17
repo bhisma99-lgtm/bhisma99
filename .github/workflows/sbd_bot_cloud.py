@@ -2571,7 +2571,7 @@ def run_cloud_bot() -> None:
     # Continuous Monitoring Loop: 0.05s (50ms) high-frequency tick drive when WS feed is active, 1.0s HTTP fallback
     poll_interval = 0.05
     is_continuous = "--once" not in sys.argv
-    execution_mode = "LIVE" if ("--live" in sys.argv or os.getenv("EXECUTION_MODE", "").upper() == "LIVE" or os.getenv("PAPER_MODE", "").lower() == "false") else "PAPER"
+    execution_mode = "PAPER" if ("--paper" in sys.argv or os.getenv("EXECUTION_MODE", "").upper() == "PAPER" or os.getenv("PAPER_MODE", "").lower() == "true") else "LIVE"
 
     # State Machine Variables
     bot_state = "IDLE"  # Options: "IDLE", "CE_LONG", "PE_LONG"
