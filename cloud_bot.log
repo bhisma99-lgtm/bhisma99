@@ -538,3 +538,188 @@ requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected(
 2026-09-17 13:11:03,580 [INFO] [13:11:01] [LIVE] IDLE | Trades: 4/4 | Spot: 74548.34 | CE: ₹174.05 | PE: ₹252.05
 2026-09-17 13:15:13,813 [INFO] [13:15:10] [LIVE] IDLE | Trades: 4/4 | Spot: 74537.24 | CE: ₹163.40 | PE: ₹259.10
 2026-09-17 13:19:17,384 [INFO] [13:19:11] [LIVE] IDLE | Trades: 4/4 | Spot: 74531.20 | CE: ₹162.00 | PE: ₹259.60
+2026-09-17 13:28:45,651 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-17 13:28:48,942 [INFO] 🔮 [RECALL MEMORY] Recalled last stored EPM for slot 12:15 (Expiry: 2026-09-17).
+2026-09-17 13:28:48,942 [INFO] =========================================================================
+2026-09-17 13:28:48,942 [INFO] SENSEX CLOUD BOT - RECALLED MASTER GRID FROM MEMORY
+2026-09-17 13:28:48,942 [INFO] Spot: 74646.01 | VIX: 12.29% | DTE: 0.50 | Move: ±339.54
+2026-09-17 13:28:48,943 [INFO] CE Strike 74500 (ITM 1 | Exp: 2026-09-17): LTP/Open ₹252.10 | Delta 0.675 | Lower ₹222.30 | Upper ₹281.90 | SL ₹207.30 | Pr. ₹300.23
+2026-09-17 13:28:48,943 [INFO] CE Strike 74400 (ITM 2 | Exp: 2026-09-17): LTP/Open ₹325.00 | Delta 0.773 | Lower ₹290.87 | Upper ₹359.13 | SL ₹275.87 | Pr. ₹380.13
+2026-09-17 13:28:48,943 [INFO] CE Strike 74300 (ITM 3 | Exp: 2026-09-17): LTP/Open ₹406.15 | Delta 0.852 | Lower ₹368.54 | Upper ₹443.76 | SL ₹353.54 | Pr. ₹466.90
+2026-09-17 13:28:48,943 [INFO] PE Strike 74700 (ITM 1 | Exp: 2026-09-17): LTP/Open ₹194.70 | Delta 0.554 | Lower ₹170.25 | Upper ₹219.15 | SL ₹155.25 | Pr. ₹234.20
+2026-09-17 13:28:48,943 [INFO] PE Strike 74800 (ITM 2 | Exp: 2026-09-17): LTP/Open ₹256.40 | Delta 0.666 | Lower ₹226.99 | Upper ₹285.81 | SL ₹211.99 | Pr. ₹303.91
+2026-09-17 13:28:48,943 [INFO] PE Strike 74900 (ITM 3 | Exp: 2026-09-17): LTP/Open ₹327.00 | Delta 0.765 | Lower ₹293.22 | Upper ₹360.78 | SL ₹278.22 | Pr. ₹381.57
+2026-09-17 13:28:48,943 [INFO] =========================================================================
+2026-09-17 13:28:53,781 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 13:28:54,262 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 13:28:54,263 [INFO] 📊 [SUPPLEMENTARY GRID] Calculating BANKNIFTY EPM Master Grid details...
+2026-09-17 13:29:02,073 [INFO] =========================================================================
+2026-09-17 13:29:02,073 [INFO] BANKNIFTY EPM MASTER GRID INITIALIZED (Slot: 12:15 IST)
+2026-09-17 13:29:02,073 [INFO] Spot LTP: 56133.15 (Open: 56126.60) | VIX: 12.29% | DTE: 8.00 | Move: ±1021.34
+2026-09-17 13:29:02,073 [INFO] CE Strike 56000 (ITM 1 | Exp: 2026-09-29): Price ₹762.60 | Delta 0.589 | Lower ₹684.45 | Upper ₹840.75 | SL ₹672.45 | Pr. ₹888.84
+2026-09-17 13:29:02,073 [INFO] CE Strike 55900 (ITM 2 | Exp: 2026-09-29): Price ₹830.40 | Delta 0.626 | Lower ₹747.24 | Upper ₹913.56 | SL ₹735.24 | Pr. ₹964.74
+2026-09-17 13:29:02,073 [INFO] CE Strike 55800 (ITM 3 | Exp: 2026-09-29): Price ₹892.15 | Delta 0.663 | Lower ₹804.12 | Upper ₹980.18 | SL ₹792.12 | Pr. ₹1034.34
+2026-09-17 13:29:02,073 [INFO] PE Strike 56200 (ITM 1 | Exp: 2026-09-29): Price ₹500.10 | Delta 0.489 | Lower ₹435.20 | Upper ₹565.00 | SL ₹423.20 | Pr. ₹604.94
+2026-09-17 13:29:02,073 [INFO] PE Strike 56300 (ITM 2 | Exp: 2026-09-29): Price ₹540.70 | Delta 0.528 | Lower ₹470.62 | Upper ₹610.78 | SL ₹458.62 | Pr. ₹653.90
+2026-09-17 13:29:02,073 [INFO] PE Strike 56400 (ITM 3 | Exp: 2026-09-29): Price ₹585.95 | Delta 0.566 | Lower ₹510.75 | Upper ₹661.15 | SL ₹498.75 | Pr. ₹707.43
+2026-09-17 13:29:02,073 [INFO] =========================================================================
+2026-09-17 13:29:05,813 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 13:29:06,300 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 13:29:06,302 [INFO] ⚡ Background WebSocket Feed initialized.
+2026-09-17 13:29:06,302 [INFO] 🔄 Entering continuous monitoring loop (Mode: LIVE, Refreshing 1s in-place)...
+2026-09-17 13:29:08,040 [INFO] Websocket connected
+2026-09-17 13:29:08,041 [INFO] 🟢 WebSocket Connection Opened successfully!
+2026-09-17 13:29:32,754 [INFO] [13:29:06] [LIVE] IDLE | Trades: 0/2 | Spot: 74373.84 | CE: ₹89.20 | PE: ₹383.00
+2026-09-17 14:02:46,160 [INFO] [14:02:18] [LIVE] IDLE | Trades: 0/2 | Spot: 74365.65 | CE: ₹90.95 | PE: ₹391.70
+2026-09-17 14:15:27,980 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹109.20 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹89.20, Target: ₹164.20) | Diagnostic: 15m MFI(5)=44.4 (prev 36.7), MFI(14)=61.2 (prev 57.8) [Falling at Entry: False]
+2026-09-17 14:15:31,367 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:15:31,855 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:15:32,489 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:15:33,119 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:15:33,746 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:15:34,371 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:15:35,003 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:15:35,699 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:15:35,699 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:15:36,175 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:15:36,201 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:15:39,779 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:15:40,276 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:15:40,300 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:16:10,260 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹106.90 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹86.90, Target: ₹161.90) | Diagnostic: 15m MFI(5)=44.9 (prev 36.7), MFI(14)=61.3 (prev 57.8) [Falling at Entry: False]
+2026-09-17 14:16:13,187 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:16:13,818 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:16:14,445 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:16:15,072 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:16:15,723 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:16:16,482 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:16:17,112 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:16:17,885 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:16:17,885 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:16:18,456 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:16:18,480 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:16:22,102 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:16:22,576 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:16:22,599 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:18:29,879 [INFO] [14:18:27] [LIVE] IDLE | Trades: 2/2 | Spot: 74406.66 | CE: ₹110.85 | PE: ₹358.80
+2026-09-17 14:19:28,191 [INFO] ⚙️ [TELEGRAM] Max Trades Limit manually updated to 4.
+2026-09-17 14:19:28,681 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:20:37,755 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹112.20 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹92.20, Target: ₹167.20) | Diagnostic: 15m MFI(5)=50.6 (prev 36.7), MFI(14)=62.5 (prev 57.8) [Falling at Entry: False]
+2026-09-17 14:20:41,231 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:20:41,705 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:20:42,496 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:20:43,270 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:20:44,032 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:20:44,659 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:20:45,291 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:20:45,928 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:20:45,929 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:20:46,435 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:20:46,460 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:20:50,387 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:20:50,867 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:20:50,891 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:30:51,612 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹116.45 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹96.45, Target: ₹171.45) | Diagnostic: 15m MFI(5)=71.4 (prev 58.6), MFI(14)=68.5 (prev 64.6) [Falling at Entry: False]
+2026-09-17 14:30:54,953 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:30:55,443 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:30:56,101 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:30:56,740 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:30:57,374 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:30:57,999 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:30:58,772 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:30:59,402 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:30:59,402 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:30:59,881 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:30:59,905 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:31:03,798 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:31:04,268 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:31:04,293 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:32:37,842 [INFO] [14:32:32] [LIVE] IDLE | Trades: 4/4 | Spot: 74412.41 | CE: ₹110.25 | PE: ₹357.15
+2026-09-17 14:36:31,835 [INFO] [14:36:26] [LIVE] IDLE | Trades: 4/4 | Spot: 74427.25 | CE: ₹117.40 | PE: ₹340.85
+2026-09-17 14:40:35,623 [INFO] [14:40:30] [LIVE] IDLE | Trades: 4/4 | Spot: 74455.82 | CE: ₹126.60 | PE: ₹328.65
+2026-09-17 14:44:31,539 [INFO] [14:44:26] [LIVE] IDLE | Trades: 4/4 | Spot: 74412.43 | CE: ₹109.15 | PE: ₹358.30
+2026-09-17 14:48:27,984 [INFO] [14:48:22] [LIVE] IDLE | Trades: 4/4 | Spot: 74466.03 | CE: ₹128.85 | PE: ₹325.15
+2026-09-17 14:49:52,028 [INFO] ⚙️ [TELEGRAM] Max Trades Limit manually updated to 7.
+2026-09-17 14:49:52,507 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:54:25,839 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:54:26,337 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:57:21,263 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹116.90 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹96.90, Target: ₹171.90) | Diagnostic: 15m MFI(5)=100.0 (prev 80.3), MFI(14)=72.4 (prev 72.1) [Falling at Entry: False]
+2026-09-17 14:57:24,653 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:57:25,123 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:57:25,832 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:57:26,480 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:57:27,135 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:57:27,764 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:57:28,395 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:57:29,174 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:57:29,174 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:57:29,645 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:57:29,671 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:57:33,341 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:57:33,812 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:57:33,838 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:57:55,255 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹117.60 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹97.60, Target: ₹172.60) | Diagnostic: 15m MFI(5)=100.0 (prev 80.3), MFI(14)=72.5 (prev 72.1) [Falling at Entry: False]
+2026-09-17 14:57:58,564 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:57:59,044 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:57:59,674 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:58:00,301 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:58:00,930 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:58:01,587 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:58:02,221 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:58:03,012 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:58:03,013 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:58:03,482 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:58:03,507 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:58:03,838 [INFO] ⚙️ [TELEGRAM] Max Trades Limit manually updated to 10.
+2026-09-17 14:58:04,313 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:58:07,606 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:58:08,100 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:58:08,131 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:58:31,040 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹114.75 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹94.75, Target: ₹169.75) | Diagnostic: 15m MFI(5)=100.0 (prev 80.3), MFI(14)=72.5 (prev 72.1) [Falling at Entry: False]
+2026-09-17 14:58:33,898 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:58:34,370 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:58:35,003 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:58:35,630 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:58:36,285 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:58:36,918 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:58:37,563 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:58:38,340 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:58:38,340 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:58:38,832 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:58:38,858 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:58:42,436 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:58:42,906 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:58:42,932 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:59:03,947 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹117.35 triggered via CE Trend riding Mid band strategy (Score: 65/100 | SL-20) (SL: ₹97.35, Target: ₹172.35) | Diagnostic: 15m MFI(5)=100.0 (prev 80.3), MFI(14)=72.6 (prev 72.1) [Falling at Entry: False]
+2026-09-17 14:59:06,763 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 14:59:07,232 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:59:07,890 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:59:08,522 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:59:09,297 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:59:09,932 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 14:59:10,560 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 14:59:11,195 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 14:59:11,195 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774500CE (BFO)
+2026-09-17 14:59:11,667 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:59:11,695 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 14:59:15,303 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774500CE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 14:59:15,769 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 14:59:15,814 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 15:03:16,999 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:03). Monitoring existing trades.
+2026-09-17 15:06:22,536 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:06). Monitoring existing trades.
+2026-09-17 15:09:27,190 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:09). Monitoring existing trades.
+2026-09-17 15:12:28,491 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:12). Monitoring existing trades.
+2026-09-17 15:15:37,038 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:15). Monitoring existing trades.
+2026-09-17 15:18:35,403 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:18). Monitoring existing trades.
+2026-09-17 15:20:23,760 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 15:20:38,314 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 15:21:47,419 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:21). Monitoring existing trades.
+2026-09-17 15:22:53,853 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 15:24:32,552 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 15:24:49,968 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 15:25:07,304 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 15:25:42,300 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:25). Monitoring existing trades.
+2026-09-17 15:26:04,757 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
+2026-09-17 15:28:58,708 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:28). Monitoring existing trades.
+2026-09-17 15:30:02,439 [INFO] 🕒 [MARKET CLOSE] Current time is after 3:30 PM IST. Shutting down bot gracefully...
+2026-09-17 15:30:02,922 [INFO] 📱 Telegram push notification sent successfully.
