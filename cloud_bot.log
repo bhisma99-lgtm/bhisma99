@@ -435,3 +435,106 @@ requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected(
 2026-09-17 09:50:30,998 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
 2026-09-17 09:50:40,294 [WARNING] ⚠️ [API DELAY] Live feed or LTP data returned None (likely Rate Limited). Skipping loop iteration to prevent stale trades.
 2026-09-17 09:57:46,214 [INFO] [09:57:05] [LIVE] IDLE | Trades: 0/3 | Spot: 74437.54 | CE: ₹268.20 | PE: ₹236.50
+2026-09-17 12:40:54,119 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-17 12:40:57,713 [INFO] 🆕 [MASTER GRID] Calculating a new Master Grid (3 ITM Strikes for CE & PE) for slot 12:15 (SENSEX)...
+2026-09-17 12:41:04,931 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:41:04,931 [INFO] =========================================================================
+2026-09-17 12:41:04,931 [INFO] SENSEX CLOUD BOT - MASTER GRID INITIALIZED (Slot: 12:15 IST)
+2026-09-17 12:41:04,931 [INFO] Spot LTP: 74646.01 (Open: 74182.62) | VIX: 12.29% | DTE: 0.50 | Move: ±339.54
+2026-09-17 12:41:04,931 [INFO] CE Strike 74500 (ITM 1 | Exp: 2026-09-17): Price ₹252.10 | Delta 0.675 | Lower ₹222.30 | Upper ₹281.90 | SL ₹207.30 | Pr. ₹300.23
+2026-09-17 12:41:04,931 [INFO] CE Strike 74400 (ITM 2 | Exp: 2026-09-17): Price ₹325.00 | Delta 0.773 | Lower ₹290.87 | Upper ₹359.13 | SL ₹275.87 | Pr. ₹380.13
+2026-09-17 12:41:04,931 [INFO] CE Strike 74300 (ITM 3 | Exp: 2026-09-17): Price ₹406.15 | Delta 0.852 | Lower ₹368.54 | Upper ₹443.76 | SL ₹353.54 | Pr. ₹466.90
+2026-09-17 12:41:04,931 [INFO] PE Strike 74700 (ITM 1 | Exp: 2026-09-17): Price ₹194.70 | Delta 0.554 | Lower ₹170.25 | Upper ₹219.15 | SL ₹155.25 | Pr. ₹234.20
+2026-09-17 12:41:04,931 [INFO] PE Strike 74800 (ITM 2 | Exp: 2026-09-17): Price ₹256.40 | Delta 0.666 | Lower ₹226.99 | Upper ₹285.81 | SL ₹211.99 | Pr. ₹303.91
+2026-09-17 12:41:04,931 [INFO] PE Strike 74900 (ITM 3 | Exp: 2026-09-17): Price ₹327.00 | Delta 0.765 | Lower ₹293.22 | Upper ₹360.78 | SL ₹278.22 | Pr. ₹381.57
+2026-09-17 12:41:04,931 [INFO] =========================================================================
+2026-09-17 12:41:11,053 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:41:11,683 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:41:11,684 [INFO] 📊 [SUPPLEMENTARY GRID] Calculating BANKNIFTY EPM Master Grid details...
+2026-09-17 12:41:20,132 [INFO] =========================================================================
+2026-09-17 12:41:20,132 [INFO] BANKNIFTY EPM MASTER GRID INITIALIZED (Slot: 12:15 IST)
+2026-09-17 12:41:20,132 [INFO] Spot LTP: 56376.85 (Open: 56126.60) | VIX: 12.29% | DTE: 8.00 | Move: ±1025.77
+2026-09-17 12:41:20,132 [INFO] CE Strike 56300 (ITM 1 | Exp: 2026-09-29): Price ₹713.20 | Delta 0.567 | Lower ₹637.61 | Upper ₹788.79 | SL ₹625.61 | Pr. ₹835.31
+2026-09-17 12:41:20,132 [INFO] CE Strike 56200 (ITM 2 | Exp: 2026-09-29): Price ₹777.80 | Delta 0.605 | Lower ₹697.13 | Upper ₹858.47 | SL ₹685.13 | Pr. ₹908.11
+2026-09-17 12:41:20,132 [INFO] CE Strike 56100 (ITM 3 | Exp: 2026-09-29): Price ₹842.00 | Delta 0.642 | Lower ₹756.38 | Upper ₹927.62 | SL ₹744.38 | Pr. ₹980.31
+2026-09-17 12:41:20,132 [INFO] PE Strike 56500 (ITM 1 | Exp: 2026-09-29): Price ₹500.95 | Delta 0.511 | Lower ₹432.86 | Upper ₹569.04 | SL ₹420.86 | Pr. ₹610.93
+2026-09-17 12:41:20,132 [INFO] PE Strike 56600 (ITM 2 | Exp: 2026-09-29): Price ₹545.05 | Delta 0.549 | Lower ₹471.81 | Upper ₹618.29 | SL ₹459.81 | Pr. ₹663.36
+2026-09-17 12:41:20,132 [INFO] PE Strike 56700 (ITM 3 | Exp: 2026-09-29): Price ₹592.95 | Delta 0.587 | Lower ₹514.63 | Upper ₹671.27 | SL ₹502.63 | Pr. ₹719.47
+2026-09-17 12:41:20,132 [INFO] =========================================================================
+2026-09-17 12:41:24,885 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:41:25,445 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:41:25,993 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:41:26,014 [INFO] ⚡ Background WebSocket Feed initialized.
+2026-09-17 12:41:26,014 [INFO] 🔄 Entering continuous monitoring loop (Mode: PAPER, Refreshing 1s in-place)...
+2026-09-17 12:41:26,774 [INFO] Websocket connected
+2026-09-17 12:41:26,775 [INFO] 🟢 WebSocket Connection Opened successfully!
+2026-09-17 12:41:41,365 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:41:42,048 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:41:59,190 [INFO] 🟢 [ENTRY CE SIGNAL] CE LTP ₹252.30 triggered via CE Dynamic EPM Low Bounce LONG Entry (Score: 100/100, Wick: 48.3%, EPM Low: ₹222.30 | SL-18.0) (SL: ₹234.30, Target: ₹307.30) | Diagnostic: 15m MFI(5)=90.8 (prev 100.0), MFI(14)=66.0 (prev 65.6) [Falling at Entry: True]
+2026-09-17 12:42:03,579 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:42:04,117 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:42:04,134 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:42:04,134 [INFO] [12:41:26] [PAPER] CE_LONG (SL ₹234.3 / TP ₹307.3) | Trades: 0/2 | Spot: 74645.21 | CE: ₹252.30 | PE: ₹195.60
+2026-09-17 12:44:22,833 [INFO] 🔴 [CE EXIT - STOP LOSS HIT] CE LTP ₹231.60 hit SL ₹234.30
+2026-09-17 12:44:24,849 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:44:25,454 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:44:25,493 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:44:39,781 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:44:53,801 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:45:19,961 [INFO] 🟢 [ENTRY PE SIGNAL] PE LTP ₹220.40 triggered via PE Dynamic EPM Low Bounce LONG Entry (Score: 80/100, Wick: 92.5%, EPM Low: ₹170.25 | SL-18.0) (SL: ₹202.40, Target: ₹275.40) | Diagnostic: 15m MFI(5)=27.8 (prev 0.0), MFI(14)=36.4 (prev 25.7) [Falling at Entry: False]
+2026-09-17 12:45:25,126 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:45:25,644 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:45:25,665 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:48:45,430 [INFO] ⚙️ [TELEGRAM] Max Trades Limit manually updated to 4.
+2026-09-17 12:48:46,031 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:49:14,405 [INFO] ⚠️ [MODE SWITCH] Switched to REAL LIVE TRADING MODE via Telegram (Lot Size: 2).
+2026-09-17 12:49:14,958 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:49:18,576 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774700PE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 12:49:19,093 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:49:19,115 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:49:35,609 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:49:49,806 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:50:15,444 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:50:40,870 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:50:52,283 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:51:19,959 [INFO] 🟢 [ENTRY PE SIGNAL] PE LTP ₹232.95 triggered via PE Dynamic EPM Low Bounce LONG Entry (Score: 80/100, Wick: 30.7%, EPM Low: ₹170.25 | SL-18.0) (SL: ₹214.95, Target: ₹287.95) | Diagnostic: 15m MFI(5)=40.1 (prev 27.9), MFI(14)=43.5 (prev 36.5) [Falling at Entry: False]
+2026-09-17 12:51:24,978 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:51:25,607 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:51:26,304 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 12:51:27,001 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 12:51:27,696 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 12:51:28,381 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 12:51:29,073 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 12:51:29,789 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 12:51:29,789 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774700PE (BFO)
+2026-09-17 12:51:30,315 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:51:30,337 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:51:34,347 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774700PE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 12:51:34,905 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:51:34,926 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:51:56,190 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:52:09,926 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:52:20,426 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:52:41,830 [INFO] ⛔ [CE SIDE LOCKED] CE Stop Loss was hit today. Skipping fresh CE entries.
+2026-09-17 12:53:02,997 [INFO] 🟢 [ENTRY PE SIGNAL] PE LTP ₹236.90 triggered via PE Dynamic EPM Low Bounce LONG Entry (Score: 80/100, Wick: 25.6%, EPM Low: ₹170.25 | SL-18.0) (SL: ₹218.90, Target: ₹291.90) | Diagnostic: 15m MFI(5)=42.1 (prev 27.9), MFI(14)=44.6 (prev 36.5) [Falling at Entry: False]
+2026-09-17 12:53:07,865 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-17 12:53:08,447 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:53:09,169 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 12:53:09,916 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 12:53:10,675 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 12:53:11,422 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=CARRYFORWARD): Empty response from SmartAPI
+2026-09-17 12:53:12,149 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=INTRADAY): Empty response from SmartAPI
+2026-09-17 12:53:12,875 [WARNING] ⚠️ SmartAPI Order rejected (BFO, producttype=MARGIN): Empty response from SmartAPI
+2026-09-17 12:53:12,875 [ERROR] ❌ Real Order Submission Failed for BUY 40 SENSEX2691774700PE (BFO)
+2026-09-17 12:53:13,400 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:53:13,422 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:53:17,505 [INFO] 🚨 [MANUAL CLOSURE DETECTED] Position for SENSEX2691774700PE has been closed manually on broker. Resetting bot state to IDLE.
+2026-09-17 12:53:18,059 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-17 12:53:18,081 [INFO] 💾 Bot state, grid state, and active trade memory saved successfully.
+2026-09-17 12:54:59,881 [INFO] [12:54:57] [LIVE] IDLE | Trades: 4/4 | Spot: 74612.59 | CE: ₹208.85 | PE: ₹224.70
+2026-09-17 12:58:58,705 [INFO] [12:58:56] [LIVE] IDLE | Trades: 4/4 | Spot: 74598.63 | CE: ₹208.40 | PE: ₹229.70
+2026-09-17 13:02:59,947 [INFO] [13:02:57] [LIVE] IDLE | Trades: 4/4 | Spot: 74589.04 | CE: ₹198.45 | PE: ₹233.90
+2026-09-17 13:07:02,498 [INFO] [13:06:57] [LIVE] IDLE | Trades: 4/4 | Spot: 74539.92 | CE: ₹176.75 | PE: ₹254.10
+2026-09-17 13:11:03,580 [INFO] [13:11:01] [LIVE] IDLE | Trades: 4/4 | Spot: 74548.34 | CE: ₹174.05 | PE: ₹252.05
+2026-09-17 13:15:13,813 [INFO] [13:15:10] [LIVE] IDLE | Trades: 4/4 | Spot: 74537.24 | CE: ₹163.40 | PE: ₹259.10
+2026-09-17 13:19:17,384 [INFO] [13:19:11] [LIVE] IDLE | Trades: 4/4 | Spot: 74531.20 | CE: ₹162.00 | PE: ₹259.60

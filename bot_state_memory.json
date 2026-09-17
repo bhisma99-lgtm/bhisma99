@@ -1,7 +1,7 @@
 {
     "date": "2026-09-17",
-    "trades_completed": 0,
-    "grid_time_slot": "09:45",
+    "trades_completed": 4,
+    "grid_time_slot": "12:15",
     "bot_state": "IDLE",
     "active_entry_price": 0.0,
     "active_sl": 0.0,
@@ -16,111 +16,111 @@
     "initial_hard_sl": 0.0,
     "handover_history": [],
     "grid": {
-        "spot": 74390.3,
-        "vix": 12.71,
+        "spot": 74646.01,
+        "vix": 12.29,
         "dte": 0.5,
-        "index_move": 349.9455140140574,
+        "index_move": 339.5447747280129,
         "ce_leg": {
-            "strike": 74300.0,
-            "ltp": 245.9,
-            "delta": 0.6106191356563295,
-            "target_epm": 273.67884554822956,
-            "epm_lower_range": 218.12115445177042,
-            "sl_auto": 203.12115445177042,
-            "practical_target": 290.77351973175547,
+            "strike": 74500.0,
+            "ltp": 252.1,
+            "delta": 0.6750111211697413,
+            "target_epm": 281.8955448799428,
+            "epm_lower_range": 222.30445512005718,
+            "sl_auto": 207.30445512005718,
+            "practical_target": 300.23126480606146,
             "option_type": "CE"
         },
         "pe_leg": {
-            "strike": 74500.0,
-            "ltp": 264.4,
-            "delta": 0.6142870619910091,
-            "target_epm": 292.34571021588175,
-            "epm_lower_range": 236.45428978411823,
-            "sl_auto": 221.45428978411823,
-            "practical_target": 309.54307034873204,
+            "strike": 74700.0,
+            "ltp": 194.7,
+            "delta": 0.5539290669390946,
+            "target_epm": 219.15088363238732,
+            "epm_lower_range": 170.24911636761266,
+            "sl_auto": 155.24911636761266,
+            "practical_target": 234.19758125231797,
             "option_type": "PE"
         },
         "ce_legs": [
             {
+                "strike": 74500.0,
+                "ltp": 252.1,
+                "delta": 0.6750111211697413,
+                "target_epm": 281.8955448799428,
+                "epm_lower_range": 222.30445512005718,
+                "sl_auto": 207.30445512005718,
+                "practical_target": 300.23126480606146,
+                "option_type": "CE"
+            },
+            {
+                "strike": 74400.0,
+                "ltp": 325.0,
+                "delta": 0.7730956521093696,
+                "target_epm": 359.1250765750287,
+                "epm_lower_range": 290.8749234249713,
+                "sl_auto": 275.8749234249713,
+                "practical_target": 380.1251236981232,
+                "option_type": "CE"
+            },
+            {
                 "strike": 74300.0,
-                "ltp": 245.9,
-                "delta": 0.6106191356563295,
-                "target_epm": 273.67884554822956,
-                "epm_lower_range": 218.12115445177042,
-                "sl_auto": 203.12115445177042,
-                "practical_target": 290.77351973175547,
-                "option_type": "CE"
-            },
-            {
-                "strike": 74200.0,
-                "ltp": 309.1,
-                "delta": 0.7147216649067822,
-                "target_epm": 341.6147732523623,
-                "epm_lower_range": 276.58522674763776,
-                "sl_auto": 261.58522674763776,
-                "practical_target": 361.6238644845852,
-                "option_type": "CE"
-            },
-            {
-                "strike": 74100.0,
-                "ltp": 380.2,
-                "delta": 0.8034244362860706,
-                "target_epm": 416.7501210525858,
-                "epm_lower_range": 343.64987894741415,
-                "sl_auto": 328.64987894741415,
-                "practical_target": 439.2425032387925,
+                "ltp": 406.15,
+                "delta": 0.8519342120735005,
+                "target_epm": 443.75507531580587,
+                "epm_lower_range": 368.5449246841941,
+                "sl_auto": 353.5449246841941,
+                "practical_target": 466.8966601255326,
                 "option_type": "CE"
             }
         ],
         "pe_legs": [
             {
-                "strike": 74500.0,
-                "ltp": 264.4,
-                "delta": 0.6142870619910091,
-                "target_epm": 292.34571021588175,
-                "epm_lower_range": 236.45428978411823,
-                "sl_auto": 221.45428978411823,
-                "practical_target": 309.54307034873204,
-                "option_type": "PE"
-            },
-            {
-                "strike": 74600.0,
-                "ltp": 335.3,
-                "delta": 0.7175764638490998,
-                "target_epm": 367.94464638318817,
-                "epm_lower_range": 302.65535361681185,
-                "sl_auto": 287.65535361681185,
-                "practical_target": 388.0336595420732,
-                "option_type": "PE"
-            },
-            {
                 "strike": 74700.0,
-                "ltp": 408.6,
-                "delta": 0.8052216712991636,
-                "target_epm": 445.23188251554575,
-                "epm_lower_range": 371.9681174844543,
-                "sl_auto": 356.9681174844543,
-                "practical_target": 467.7745794481893,
+                "ltp": 194.7,
+                "delta": 0.5539290669390946,
+                "target_epm": 219.15088363238732,
+                "epm_lower_range": 170.24911636761266,
+                "sl_auto": 155.24911636761266,
+                "practical_target": 234.19758125231797,
+                "option_type": "PE"
+            },
+            {
+                "strike": 74800.0,
+                "ltp": 256.4,
+                "delta": 0.666291887058078,
+                "target_epm": 285.8106707302509,
+                "epm_lower_range": 226.98932926974908,
+                "sl_auto": 211.98932926974908,
+                "practical_target": 303.9095450257899,
+                "option_type": "PE"
+            },
+            {
+                "strike": 74900.0,
+                "ltp": 327.0,
+                "delta": 0.7652848042065661,
+                "target_epm": 360.7802993381217,
+                "epm_lower_range": 293.2197006618783,
+                "sl_auto": 278.2197006618783,
+                "practical_target": 381.5681758538889,
                 "option_type": "PE"
             }
         ]
     },
     "ce_contract": {
         "exchange": "BFO",
-        "trading_symbol": "SENSEX2691774300CE",
-        "symbol_token": "869699",
+        "trading_symbol": "SENSEX2691774500CE",
+        "symbol_token": "875758",
         "expiry": "2026-09-17",
-        "strike": 74300.0,
+        "strike": 74500.0,
         "option_type": "CE",
-        "delta": 0.6106191356563295
+        "delta": 0.6750111211697413
     },
     "pe_contract": {
         "exchange": "BFO",
-        "trading_symbol": "SENSEX2691774500PE",
-        "symbol_token": "862742",
+        "trading_symbol": "SENSEX2691774700PE",
+        "symbol_token": "866869",
         "expiry": "2026-09-17",
-        "strike": 74500.0,
+        "strike": 74700.0,
         "option_type": "PE",
-        "delta": -0.6142870619910091
+        "delta": -0.5539290669390946
     }
 }
