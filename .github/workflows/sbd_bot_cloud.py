@@ -3304,30 +3304,6 @@ def run_cloud_bot() -> None:
                                 if ce_epm_low_saved is None or ce_epm_low_saved <= 0:
                                     ce_epm_low_saved = grid.ce_leg.epm_lower_range if (grid and grid.ce_leg) else 0.0
 
-                                # --- Trend riding Mid band strategy Entry Signal (CE) ---
-                                is_trend_riding_ce = False
-                                if TrendRidingMidBandStrategy is not None:
-                                    tr_strat_ce = TrendRidingMidBandStrategy()
-                                    ctx_tr_ce = MarketContext(
-                                        timestamp=now_time_str, open=c_open_15m or live_ce_ltp, high=live_ce_ltp, low=c_low_15m or live_ce_ltp,
-                                        close=live_ce_ltp, volume=1.0, mfi5_15m=mfi5_15m, mfi14_15m=mfi14_15m, prev_mfi5_15m=prev_mfi5_15m,
-                                        prev_mfi14_15m=prev_mfi14_15m, mfi5_30m=mfi5_30m, mfi14_30m=mfi14_30m, prev_mfi5_30m=prev_mfi5_30m,
-                                        prev_mfi14_30m=prev_mfi14_30m, prev_prev_mfi14_30m=prev_prev_mfi14_30m, mfi5_60m=mfi5_60m, mfi14_60m=mfi14_60m,
-                                        prev_mfi5_60m=prev_mfi5_60m, prev_mfi14_60m=prev_mfi14_60m, mfi5_3m=mfi5_3m, mfi14_3m=mfi14_3m,
-                                        prev_mfi5_3m=prev_mfi5_3m, prev_mfi14_3m=prev_mfi14_3m, prev_prev_mfi5_3m=50.0, prev_prev_mfi14_3m=50.0,
-                                        mb_3m=mb_3m_ce or live_ce_ltp, ub_3m=ub_3m_ce or live_ce_ltp, lb_3m=lb_3m_ce or live_ce_ltp,
-                                        prev_mb_20=live_ce_ltp, prev_prev_mb_20=live_ce_ltp, prev_mb_3m=live_ce_ltp, prev_prev_mb_3m=live_ce_ltp,
-                                        mb_20=c_open_15m or live_ce_ltp, ub_20=grid.ce_leg.target_epm, lb_20=grid.ce_leg.epm_lower_range,
-                                        prev_high=previous_ce_high, prev_low=recent_ce_low, prev_close=c_open_15m or live_ce_ltp,
-                                        recent_swing_low=recent_ce_low, recent_swing_high=previous_ce_high, dynamic_tolerance=5.0,
-                                        is_0915_bar=is_915_opening, is_big_gap_up=is_ce_big_gap_up, allow_reentry=allow_reentry_live,
-                                        recovery_eligible=recovery_reentry_eligible, initial_entry_done=initial_entry_happened
-                                    )
-                                    setattr(ctx_tr_ce, "confluence_score", conf_score_ce if 'conf_score_ce' in locals() else 65)
-                                    tr_sig_ce = tr_strat_ce.evaluate_entry(ctx_tr_ce)
-                                    if tr_sig_ce and live_spot >= spot_open:
-                                        is_trend_riding_ce = True
-
                                 atr14_ce, stddev20_ce = calculate_atr_and_stddev(smart_api, getattr(ce_contract, "exchange", "BFO"), ce_contract.symbol_token)
                                 dynamic_near_thresh_ce = calculate_dynamic_epm_proximity_threshold(
                                     atr14_15m=atr14_ce,
@@ -3356,6 +3332,32 @@ def run_cloud_bot() -> None:
                                     candle_open=c_open_15m or live_ce_ltp,
                                     option_type="CE"
                                 )
+
+                                # --- Trend riding Mid band strategy Entry Signal (CE) ---
+                                is_trend_riding_ce = False
+                                if TrendRidingMidBandStrategy is not None and conf_score_ce >= 60:
+                                    tr_strat_ce = TrendRidingMidBandStrategy()
+                                    ctx_tr_ce = MarketContext(
+                                        timestamp=now_time_str, open=c_open_15m or live_ce_ltp, high=live_ce_ltp, low=c_low_15m or live_ce_ltp,
+                                        close=live_ce_ltp, volume=1.0, mfi5_15m=mfi5_15m, mfi14_15m=mfi14_15m, prev_mfi5_15m=prev_mfi5_15m,
+                                        prev_mfi14_15m=prev_mfi14_15m, mfi5_30m=mfi5_30m, mfi14_30m=mfi14_30m, prev_mfi5_30m=prev_mfi5_30m,
+                                        prev_mfi14_30m=prev_mfi14_30m, prev_prev_mfi14_30m=prev_prev_mfi14_30m, mfi5_60m=mfi5_60m, mfi14_60m=mfi14_60m,
+                                        prev_mfi5_60m=prev_mfi5_60m, prev_mfi14_60m=prev_mfi14_60m, mfi5_3m=mfi5_3m, mfi14_3m=mfi14_3m,
+                                        prev_mfi5_3m=prev_mfi5_3m, prev_mfi14_3m=prev_mfi14_3m, prev_prev_mfi5_3m=50.0, prev_prev_mfi14_3m=50.0,
+                                        mb_3m=mb_3m_ce or live_ce_ltp, ub_3m=ub_3m_ce or live_ce_ltp, lb_3m=lb_3m_ce or live_ce_ltp,
+                                        prev_mb_20=live_ce_ltp, prev_prev_mb_20=live_ce_ltp, prev_mb_3m=live_ce_ltp, prev_prev_mb_3m=live_ce_ltp,
+                                        mb_20=c_open_15m or live_ce_ltp, ub_20=grid.ce_leg.target_epm, lb_20=grid.ce_leg.epm_lower_range,
+                                        prev_high=previous_ce_high, prev_low=recent_ce_low, prev_close=c_open_15m or live_ce_ltp,
+                                        recent_swing_low=recent_ce_low, recent_swing_high=previous_ce_high, dynamic_tolerance=5.0,
+                                        is_0915_bar=is_915_opening, is_big_gap_up=is_ce_big_gap_up, allow_reentry=allow_reentry_live,
+                                        recovery_eligible=recovery_reentry_eligible, initial_entry_done=initial_entry_happened
+                                    )
+                                    setattr(ctx_tr_ce, "confluence_score", conf_score_ce)
+                                    tr_sig_ce = tr_strat_ce.evaluate_entry(ctx_tr_ce)
+                                    # Require price correction near 3m Middle Band (within 20 pts)
+                                    is_near_mid_band_ce = (mb_3m_ce is not None and mb_3m_ce > 0.0) and (abs(live_ce_ltp - mb_3m_ce) <= 20.0 or live_ce_ltp <= mb_3m_ce + 15.0)
+                                    if tr_sig_ce and live_spot >= spot_open and is_near_mid_band_ce:
+                                        is_trend_riding_ce = True
 
                                 is_epm_lower_wick_absorbed_ce = (wick_pct_15m_ce >= 35.0) or (wick_pct_3m_ce >= 35.0)
                                 is_epm_low_bounce_entry_ce = ((is_price_near_epm_low_ce and is_bouncing_ce and is_mfi_increasing_ce) or (conf_score_ce >= 80)) and is_epm_lower_wick_absorbed_ce and (conf_score_ce >= 80)

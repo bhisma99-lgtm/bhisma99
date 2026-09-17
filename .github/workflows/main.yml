@@ -41,7 +41,7 @@ jobs:
           ANGEL_ONE_CLIENT_CODE: ${{ secrets.ANGEL_ONE_CLIENT_CODE }}
           ANGEL_ONE_PASSWORD: ${{ secrets.ANGEL_ONE_PASSWORD }}
           ANGEL_ONE_TOTP_SECRET: ${{ secrets.ANGEL_ONE_TOTP_SECRET }}
-	  FORCE_PUBLIC_IP: ${{ secrets.FORCE_PUBLIC_IP }}
+          FORCE_PUBLIC_IP: ${{ secrets.FORCE_PUBLIC_IP }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
