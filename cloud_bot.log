@@ -801,3 +801,18 @@ Traceback (most recent call last):
   File "/home/runner/work/bhisma99/bhisma99/.github/workflows/sbd_bot_cloud.py", line 3557, in run_cloud_bot
     is_squeeze_pullback_pe = is_bb_squeeze_pe and (mb_3m_pe is not None and live_pe_ltp <= mb_3m_pe + 2.0 and live_pe_ltp >= p_open_15m) and (mfi14_15m_pe <= 25.0 or mfi5_15m_pe <= 20.0 or is_15m_mfi_rising_pe)
 UnboundLocalError: local variable 'is_15m_mfi_rising_pe' referenced before assignment
+2026-09-18 14:40:58,159 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-18 14:41:01,620 [INFO] 🔮 [RECALL MEMORY] Recalled last stored EPM for slot 12:15 (Expiry: 2026-09-28).
+2026-09-18 14:41:01,620 [INFO] =========================================================================
+2026-09-18 14:41:01,620 [INFO] SENSEX CLOUD BOT - RECALLED MASTER GRID FROM MEMORY
+2026-09-18 14:41:01,620 [INFO] Spot: 74537.69 | VIX: 11.53% | DTE: 6.00 | Move: ±1101.88
+2026-09-18 14:41:01,620 [INFO] CE Strike 74500 (ITM 1 | Exp: 2026-09-28): LTP/Open ₹468.90 | Delta 0.548 | Lower ₹390.47 | Upper ₹547.33 | SL ₹375.47 | Pr. ₹595.60
+2026-09-18 14:41:01,620 [INFO] CE Strike 74400 (ITM 2 | Exp: 2026-09-28): LTP/Open ₹524.35 | Delta 0.583 | Lower ₹440.80 | Upper ₹607.90 | SL ₹425.80 | Pr. ₹659.32
+2026-09-18 14:41:01,620 [INFO] CE Strike 74300 (ITM 3 | Exp: 2026-09-28): LTP/Open ₹586.20 | Delta 0.618 | Lower ₹497.62 | Upper ₹674.78 | SL ₹482.62 | Pr. ₹729.30
+2026-09-18 14:41:01,620 [INFO] PE Strike 74500 (ITM 1 | Exp: 2026-09-28): LTP/Open ₹375.10 | Delta 0.452 | Lower ₹310.29 | Upper ₹439.91 | SL ₹295.29 | Pr. ₹479.80
+2026-09-18 14:41:01,620 [INFO] PE Strike 74600 (ITM 2 | Exp: 2026-09-28): LTP/Open ₹421.20 | Delta 0.489 | Lower ₹351.22 | Upper ₹491.18 | SL ₹336.22 | Pr. ₹534.25
+2026-09-18 14:41:01,620 [INFO] PE Strike 74700 (ITM 3 | Exp: 2026-09-28): LTP/Open ₹471.00 | Delta 0.525 | Lower ₹395.84 | Upper ₹546.16 | SL ₹380.84 | Pr. ₹592.41
+2026-09-18 14:41:01,620 [INFO] =========================================================================
+2026-09-18 14:41:06,741 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-18 14:41:07,302 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-18 14:41:07,303 [INFO] 📊 [SUPPLEMENTARY GRID] Calculating BANKNIFTY EPM Master Grid details...
