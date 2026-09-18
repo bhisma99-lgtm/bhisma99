@@ -862,3 +862,37 @@ UnboundLocalError: local variable 'is_15m_mfi_rising_pe' referenced before assig
 2026-09-18 15:30:02,093 [INFO] ⏸️ [15:00 ENTRY CUTOFF] Fresh entries blocked on or after 15:00:00 (Current Time: 15:30). Monitoring existing trades.
 2026-09-18 15:30:07,149 [INFO] 🕒 [MARKET CLOSE] Current time is after 3:30 PM IST. Shutting down bot gracefully...
 2026-09-18 15:30:07,675 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-18 19:43:43,152 [INFO] 🚀 Starting Standalone Cloud SENSEX Options Bot...
+2026-09-18 19:43:46,729 [INFO] 🔮 [RECALL MEMORY] Recalled last stored EPM for slot 12:15 (Expiry: 2026-09-28).
+2026-09-18 19:43:46,729 [INFO] =========================================================================
+2026-09-18 19:43:46,729 [INFO] SENSEX CLOUD BOT - RECALLED MASTER GRID FROM MEMORY
+2026-09-18 19:43:46,729 [INFO] Spot: 74537.69 | VIX: 11.53% | DTE: 6.00 | Move: ±1101.88
+2026-09-18 19:43:46,729 [INFO] CE Strike 74500 (ITM 1 | Exp: 2026-09-28): LTP/Open ₹468.90 | Delta 0.548 | Lower ₹390.47 | Upper ₹547.33 | SL ₹375.47 | Pr. ₹595.60
+2026-09-18 19:43:46,729 [INFO] CE Strike 74400 (ITM 2 | Exp: 2026-09-28): LTP/Open ₹524.35 | Delta 0.583 | Lower ₹440.80 | Upper ₹607.90 | SL ₹425.80 | Pr. ₹659.32
+2026-09-18 19:43:46,729 [INFO] CE Strike 74300 (ITM 3 | Exp: 2026-09-28): LTP/Open ₹586.20 | Delta 0.618 | Lower ₹497.62 | Upper ₹674.78 | SL ₹482.62 | Pr. ₹729.30
+2026-09-18 19:43:46,729 [INFO] PE Strike 74500 (ITM 1 | Exp: 2026-09-28): LTP/Open ₹375.10 | Delta 0.452 | Lower ₹310.29 | Upper ₹439.91 | SL ₹295.29 | Pr. ₹479.80
+2026-09-18 19:43:46,729 [INFO] PE Strike 74600 (ITM 2 | Exp: 2026-09-28): LTP/Open ₹421.20 | Delta 0.489 | Lower ₹351.22 | Upper ₹491.18 | SL ₹336.22 | Pr. ₹534.25
+2026-09-18 19:43:46,729 [INFO] PE Strike 74700 (ITM 3 | Exp: 2026-09-28): LTP/Open ₹471.00 | Delta 0.525 | Lower ₹395.84 | Upper ₹546.16 | SL ₹380.84 | Pr. ₹592.41
+2026-09-18 19:43:46,730 [INFO] =========================================================================
+2026-09-18 19:43:52,952 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-18 19:43:53,533 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-18 19:43:53,533 [INFO] 📊 [SUPPLEMENTARY GRID] Calculating BANKNIFTY EPM Master Grid details...
+2026-09-18 19:44:02,098 [INFO] =========================================================================
+2026-09-18 19:44:02,098 [INFO] BANKNIFTY EPM MASTER GRID INITIALIZED (Slot: 12:15 IST)
+2026-09-18 19:44:02,098 [INFO] Spot LTP: 56358.70 (Open: 56172.85) | VIX: 11.53% | DTE: 7.00 | Move: ±899.90
+2026-09-18 19:44:02,098 [INFO] CE Strike 56400 (ITM 1 | Exp: 2026-09-29): Price ₹532.85 | Delta 0.518 | Lower ₹472.20 | Upper ₹593.50 | SL ₹460.20 | Pr. ₹630.82
+2026-09-18 19:44:02,099 [INFO] CE Strike 56300 (ITM 2 | Exp: 2026-09-29): Price ₹596.85 | Delta 0.563 | Lower ₹531.04 | Upper ₹662.66 | SL ₹519.04 | Pr. ₹703.15
+2026-09-18 19:44:02,099 [INFO] CE Strike 56200 (ITM 3 | Exp: 2026-09-29): Price ₹645.65 | Delta 0.606 | Lower ₹574.77 | Upper ₹716.53 | SL ₹562.77 | Pr. ₹760.15
+2026-09-18 19:44:02,099 [INFO] PE Strike 56400 (ITM 1 | Exp: 2026-09-29): Price ₹413.15 | Delta 0.482 | Lower ₹356.81 | Upper ₹469.49 | SL ₹344.81 | Pr. ₹504.16
+2026-09-18 19:44:02,099 [INFO] PE Strike 56500 (ITM 2 | Exp: 2026-09-29): Price ₹457.35 | Delta 0.526 | Lower ₹395.84 | Upper ₹518.86 | SL ₹383.84 | Pr. ₹556.72
+2026-09-18 19:44:02,099 [INFO] PE Strike 56600 (ITM 3 | Exp: 2026-09-29): Price ₹505.25 | Delta 0.570 | Lower ₹438.61 | Upper ₹571.89 | SL ₹426.61 | Pr. ₹612.90
+2026-09-18 19:44:02,099 [INFO] =========================================================================
+2026-09-18 19:44:06,765 [INFO] 🎙️ Telegram Voice Alert sent successfully as native playable voice note.
+2026-09-18 19:44:07,291 [INFO] 📱 Telegram push notification sent successfully.
+2026-09-18 19:44:07,292 [INFO] ⚡ Background WebSocket Feed initialized.
+2026-09-18 19:44:07,292 [INFO] 🔄 Entering continuous monitoring loop (Mode: LIVE, Refreshing 1s in-place)...
+2026-09-18 19:44:07,966 [INFO] 📱 Telegram updates flushed on startup (Last Update ID: 55226034)
+2026-09-18 19:44:07,974 [INFO] Websocket connected
+2026-09-18 19:44:07,974 [INFO] 🟢 WebSocket Connection Opened successfully!
+2026-09-18 19:44:08,016 [INFO] 🕒 [MARKET CLOSE] Current time is after 3:30 PM IST. Shutting down bot gracefully...
+2026-09-18 19:44:08,559 [INFO] 📱 Telegram push notification sent successfully.
