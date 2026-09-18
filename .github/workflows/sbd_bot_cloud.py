@@ -696,11 +696,12 @@ def reauthenticate_smartapi(smart_api: Any) -> bool:
     return False
 
 
-def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10, exchange: str | None = None) -> Any:
-    """Submit real Market Order to Angel One SmartAPI with dynamic exchange detection (NFO/BFO), product type fallback, auto-IP assignment, auto-reauth, and robust error handling."""
+def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, transaction_type: str = "BUY", quantity: int = 10, exchange: str | None = None, limit_price: float = 0.0) -> Any:
+    """Submit real Order to Angel One SmartAPI with dynamic IP injection, BFO/NFO exchange auto-detection, and fallback order types."""
     qty_val = max(1, int(quantity))
     pub_ip = get_public_ip()
     if smart_api:
+        smart_api.timeout = 25
         smart_api.clientPublicIp = pub_ip
         smart_api.clientPublicIP = pub_ip
         smart_api.clientLocalIp = "127.0.0.1"
@@ -710,47 +711,51 @@ def submit_angel_order(smart_api: Any, trading_symbol: str, symbol_token: str, t
         sym_str = str(trading_symbol).upper()
         exchange = "NFO" if ("BANKNIFTY" in sym_str or "NIFTY" in sym_str or "FINNIFTY" in sym_str) else "BFO"
 
+    # Order types to attempt: LIMIT order first (as tested in testing_order.py) then MARKET
+    order_types = [("LIMIT", f"{limit_price:.2f}" if limit_price > 0 else "0"), ("MARKET", "0")] if limit_price > 0 else [("MARKET", "0"), ("LIMIT", "0")]
+
     for attempt in range(1, 3):
         for product_type in ("CARRYFORWARD", "INTRADAY", "DELIVERY", "MARGIN"):
-            try:
-                order_params = {
-                    "variety": "NORMAL",
-                    "tradingsymbol": str(trading_symbol).strip(),
-                    "symboltoken": str(symbol_token).strip(),
-                    "transactiontype": transaction_type.upper(),
-                    "exchange": exchange,
-                    "ordertype": "MARKET",
-                    "producttype": product_type,
-                    "duration": "DAY",
-                    "price": "0",
-                    "squareoff": "0",
-                    "stoploss": "0",
-                    "quantity": str(qty_val),
-                }
-                res = smart_api.placeOrder(order_params)
-                order_id, err_msg = parse_angel_order_response(res)
-                if order_id:
-                    logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s (%s, %s) | Order ID: %s", transaction_type, qty_val, trading_symbol, exchange, product_type, order_id)
-                    send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}* ({exchange})\nQuantity: *{qty_val}*\nOrder ID: `{order_id}`")
-                    return order_id
-                else:
-                    logger.warning("⚠️ SmartAPI Order rejected (%s, producttype=%s): %s", exchange, product_type, err_msg)
-                    err_lower = err_msg.lower()
-                    if "not a registered ip" in err_lower or "ag7002" in err_lower:
-                        logger.error("🚨 [ANGEL ONE IP ERROR AG7002] Public IP %s is not registered in Angel Portal.", pub_ip)
-                        send_mobile_alert(f"⚠️ *ANGEL ONE IP AUTHORIZATION ERROR (AG7002)*\n"
-                                          f"Public IP `{pub_ip}` is not registered in Angel One Developer Portal.\n"
-                                          f"👉 Action: Please whitelist IP `{pub_ip}` in your API Key settings in Angel Portal.")
-                    if any(kw in err_lower for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
-                        logger.info("🔄 Session token error detected during order placement. Triggering instant re-auth...")
+            for o_type, o_price in order_types:
+                try:
+                    order_params = {
+                        "variety": "NORMAL",
+                        "tradingsymbol": str(trading_symbol).strip(),
+                        "symboltoken": str(symbol_token).strip(),
+                        "transactiontype": transaction_type.upper(),
+                        "exchange": exchange,
+                        "ordertype": o_type,
+                        "producttype": product_type,
+                        "duration": "DAY",
+                        "price": o_price,
+                        "squareoff": "0",
+                        "stoploss": "0",
+                        "quantity": str(qty_val),
+                    }
+                    res = smart_api.placeOrder(order_params)
+                    order_id, err_msg = parse_angel_order_response(res)
+                    if order_id:
+                        logger.info("⚡ [REAL ORDER SUBMITTED] %s %d %s (%s, %s) | Order ID: %s", transaction_type, qty_val, trading_symbol, exchange, product_type, order_id)
+                        send_mobile_alert(f"🚨 *REAL ORDER PLACED ON ANGEL ONE*\n\nAction: *{transaction_type}*\nContract: *{trading_symbol}* ({exchange})\nQuantity: *{qty_val}*\nOrder ID: `{order_id}`")
+                        return order_id
+                    else:
+                        logger.warning("⚠️ SmartAPI Order rejected (%s, producttype=%s): %s", exchange, product_type, err_msg)
+                        err_lower = err_msg.lower()
+                        if "not a registered ip" in err_lower or "ag7002" in err_lower:
+                            logger.error("🚨 [ANGEL ONE IP ERROR AG7002] Public IP %s is not registered in Angel Portal.", pub_ip)
+                            send_mobile_alert(f"⚠️ *ANGEL ONE IP AUTHORIZATION ERROR (AG7002)*\n"
+                                              f"Public IP `{pub_ip}` is not registered in Angel One Developer Portal.\n"
+                                              f"👉 Action: Please whitelist IP `{pub_ip}` in your API Key settings in Angel Portal.")
+                        if any(kw in err_lower for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
+                            logger.info("🔄 Session token error detected during order placement. Triggering instant re-auth...")
+                            reauthenticate_smartapi(smart_api)
+                            break  # Retry loop with refreshed credentials
+                except Exception as exc:
+                    exc_str = str(exc)
+                    logger.warning("⚠️ Exception submitting order (%s, producttype=%s): %s", exchange, product_type, exc)
+                    if any(kw in exc_str.lower() for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
                         reauthenticate_smartapi(smart_api)
-                        break  # Retry loop with refreshed credentials
-            except Exception as exc:
-                exc_str = str(exc)
-                logger.warning("⚠️ Exception submitting order (%s, producttype=%s): %s", exchange, product_type, exc)
-                if any(kw in exc_str.lower() for kw in ["token", "session", "unauthorized", "expired", "ag8001", "login", "auth"]):
-                    reauthenticate_smartapi(smart_api)
-                    break
+                        break
     
     logger.error("❌ Real Order Submission Failed for %s %d %s (%s)", transaction_type, qty_val, trading_symbol, exchange)
     send_mobile_alert(f"⚠️ *ORDER SUBMISSION ERROR*\nFailed to place {transaction_type} for {trading_symbol} ({exchange}). Check Angel One account permissions.")
@@ -3189,6 +3194,11 @@ def run_cloud_bot() -> None:
                                 is_higher_low_mfi_ce = (mfi5_15m > prev_mfi5_15m or mfi14_15m > prev_mfi14_15m or mfi5_3m > prev_mfi5_3m)
                                 is_breakout_type2_ce = is_lower_low_price_ce and is_higher_low_mfi_ce and is_bounce_open_ce
 
+                                # HTF MFI Rising check: 15m or 30m MFI rising
+                                is_15m_mfi_rising_ce = (mfi14_15m > prev_mfi14_15m) or (mfi14_15m >= prev_mfi14_15m and mfi5_15m > prev_mfi5_15m)
+                                is_30m_mfi_rising_ce = (mfi14_30m > prev_mfi14_30m) or (mfi14_30m >= prev_mfi14_30m and mfi5_30m > prev_mfi5_30m)
+                                is_htf_mfi_rising_ce = is_15m_mfi_rising_ce or is_30m_mfi_rising_ce
+
                                 # Breakout Condition #3: Bollinger Band Squeeze
                                 bb_bandwidth_3m_ce = ((ub_3m_ce - lb_3m_ce) / mb_3m_ce) if (ub_3m_ce and lb_3m_ce and mb_3m_ce and mb_3m_ce > 0) else 1.0
                                 is_bb_squeeze_ce = (bb_bandwidth_3m_ce <= 0.15)
@@ -3245,11 +3255,6 @@ def run_cloud_bot() -> None:
                                 is_3m_both_falling_ce = (mfi5_3m < prev_mfi5_3m) and (mfi14_3m < prev_mfi14_3m)
                                 is_3m_mfi_rising_ce = ((mfi5_3m > prev_mfi5_3m) and (mfi14_3m >= prev_mfi14_3m)) or (mfi14_3m > prev_mfi14_3m)
                                 
-                                # HTF MFI Rising check: 15m or 30m MFI rising
-                                is_15m_mfi_rising_ce = (mfi14_15m > prev_mfi14_15m) or (mfi14_15m >= prev_mfi14_15m and mfi5_15m > prev_mfi5_15m)
-                                is_30m_mfi_rising_ce = (mfi14_30m > prev_mfi14_30m) or (mfi14_30m >= prev_mfi14_30m and mfi5_30m > prev_mfi5_30m)
-                                is_htf_mfi_rising_ce = is_15m_mfi_rising_ce or is_30m_mfi_rising_ce
-
                                 # Track Lower Bollinger Band touch
                                 if lb_3m_ce is not None and (live_ce_ltp <= lb_3m_ce + 2.0 or (c_low_3m_ce is not None and c_low_3m_ce <= lb_3m_ce + 2.0) or c_low_15m <= lb_3m_ce + 2.0):
                                     lower_bb_touched_ce = True
@@ -3550,6 +3555,11 @@ def run_cloud_bot() -> None:
                                 is_higher_low_mfi_pe = (mfi5_15m_pe > prev_mfi5_15m_pe or mfi14_15m_pe > prev_mfi14_15m_pe or mfi5_3m_pe > prev_mfi5_3m_pe)
                                 is_breakout_type2_pe = is_lower_low_price_pe and is_higher_low_mfi_pe and is_bounce_open_pe
 
+                                # HTF MFI Rising check: 15m or 30m MFI rising
+                                is_15m_mfi_rising_pe = (mfi14_15m_pe > prev_mfi14_15m_pe) or (mfi14_15m_pe >= prev_mfi14_15m_pe and mfi5_15m_pe > prev_mfi5_15m_pe)
+                                is_30m_mfi_rising_pe = (mfi14_30m_pe > prev_mfi14_30m_pe) or (mfi14_30m_pe >= prev_mfi14_30m_pe and mfi5_30m_pe > prev_mfi5_30m_pe)
+                                is_htf_mfi_rising_pe = is_15m_mfi_rising_pe or is_30m_mfi_rising_pe
+
                                 # Breakout Condition #3: Bollinger Band Squeeze PE
                                 bb_bandwidth_3m_pe = ((ub_3m_pe - lb_3m_pe) / mb_3m_pe) if (ub_3m_pe and lb_3m_pe and mb_3m_pe and mb_3m_pe > 0) else 1.0
                                 is_bb_squeeze_pe = (bb_bandwidth_3m_pe <= 0.15)
@@ -3606,11 +3616,6 @@ def run_cloud_bot() -> None:
                                 is_3m_both_falling_pe = (mfi5_3m_pe < prev_mfi5_3m_pe) and (mfi14_3m_pe < prev_mfi14_3m_pe)
                                 is_3m_mfi_rising_pe = ((mfi5_3m_pe > prev_mfi5_3m_pe) and (mfi14_3m_pe >= prev_mfi14_3m_pe)) or (mfi14_3m_pe > prev_mfi14_3m_pe)
                                 
-                                # HTF MFI Rising check: 15m or 30m MFI rising
-                                is_15m_mfi_rising_pe = (mfi14_15m_pe > prev_mfi14_15m_pe) or (mfi14_15m_pe >= prev_mfi14_15m_pe and mfi5_15m_pe > prev_mfi5_15m_pe)
-                                is_30m_mfi_rising_pe = (mfi14_30m_pe > prev_mfi14_30m_pe) or (mfi14_30m_pe >= prev_mfi14_30m_pe and mfi5_30m_pe > prev_mfi5_30m_pe)
-                                is_htf_mfi_rising_pe = is_15m_mfi_rising_pe or is_30m_mfi_rising_pe
-
                                 # Track Lower Bollinger Band touch
                                 if lb_3m_pe is not None and (live_pe_ltp <= lb_3m_pe + 2.0 or (c_low_3m_pe is not None and c_low_3m_pe <= lb_3m_pe + 2.0) or p_low_15m <= lb_3m_pe + 2.0):
                                     lower_bb_touched_pe = True
